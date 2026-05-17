@@ -700,31 +700,38 @@ def save_risk_settings(values: dict[str, object]) -> None:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def load_bot_instances() -> pd.DataFrame:
+    file_rows = load_json_list(BOT_INSTANCES_PATH)
+    file_frame = normalize_bot_frame(pd.DataFrame(file_rows)) if file_rows else pd.DataFrame()
     if setting_bool("database_enabled"):
         try:
             import asyncio
 
             frame = asyncio.run(_load_bot_instances_from_db())
             if not frame.empty:
-                frame = normalize_bot_frame(frame)
-                log_diagnostic(logger, "bot_instances_loaded", source="database", rows=len(frame))
-                return frame
+                db_frame = normalize_bot_frame(frame)
+                merged = merge_bot_frames(db_frame, file_frame)
+                if len(merged) > len(db_frame):
+                    asyncio.run(_save_bot_instances_to_db(merged))
+                    log_diagnostic(logger, "bot_instances_backfilled_to_database", rows=len(merged) - len(db_frame))
+                log_diagnostic(logger, "bot_instances_loaded", source="database+file", rows=len(merged))
+                return merged
             rows = default_bot_instances()
             asyncio.run(_save_bot_instances_to_db(pd.DataFrame(rows)))
-            frame = normalize_bot_frame(pd.DataFrame(rows))
+            frame = merge_bot_frames(normalize_bot_frame(pd.DataFrame(rows)), file_frame)
             log_diagnostic(logger, "bot_instances_seeded", source="database", rows=len(frame))
             return frame
         except Exception as exc:
             logger.exception("bot_instances_database_load_failed fallback=file")
             append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "BOT_INSTANCES", str(exc))
-    rows = load_json_list(BOT_INSTANCES_PATH)
-    if not rows:
+    if file_frame.empty:
         rows = default_bot_instances()
         save_json_list(BOT_INSTANCES_PATH, rows)
-    return normalize_bot_frame(pd.DataFrame(rows))
+        file_frame = normalize_bot_frame(pd.DataFrame(rows))
+    return file_frame
 
 
 def save_bot_instances(frame: pd.DataFrame) -> None:
+    save_json_list(BOT_INSTANCES_PATH, frame.to_dict(orient="records"))
     if setting_bool("database_enabled"):
         try:
             import asyncio
@@ -736,7 +743,6 @@ def save_bot_instances(frame: pd.DataFrame) -> None:
         except Exception as exc:
             logger.exception("bot_instances_database_save_failed fallback=file")
             append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "BOT_INSTANCES", str(exc))
-    save_json_list(BOT_INSTANCES_PATH, frame.to_dict(orient="records"))
     load_bot_instances.clear()
 
 
@@ -860,6 +866,16 @@ def normalize_bot_frame(frame: pd.DataFrame) -> pd.DataFrame:
         if column not in frame.columns:
             frame[column] = default
     return frame
+
+
+def merge_bot_frames(primary: pd.DataFrame, secondary: pd.DataFrame) -> pd.DataFrame:
+    frames = [frame for frame in [primary, secondary] if not frame.empty]
+    if not frames:
+        return pd.DataFrame()
+    merged = normalize_bot_frame(pd.concat(frames, ignore_index=True))
+    if "name" not in merged:
+        return merged
+    return merged.drop_duplicates(subset=["name"], keep="first").reset_index(drop=True)
 
 
 def transition_bot(name: str, state: str, reason: str, parameter_updates: dict[str, object] | None = None) -> None:
@@ -1922,7 +1938,12 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
         <div id="runtime-live" style="font-family:Inter,Arial,sans-serif;color:#e8edf2;background:#111820;border:1px solid #26323b;border-radius:8px;padding:10px;margin:8px 0;"></div>
         <script>
         const rows = {json.dumps(rows)};
-        const states = Object.fromEntries(rows.map(r => [r.symbol.replace("/", "").toLowerCase(), r]));
+        const rowsBySymbol = rows.reduce((acc, row) => {{
+          const key = row.symbol.replace("/", "").toLowerCase();
+          acc[key] = acc[key] || [];
+          acc[key].push(row);
+          return acc;
+        }}, {{}});
         let socketStatus = "starting";
         function ageText(value) {{
           if (!value) return "pending";
@@ -1942,9 +1963,9 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
         }}
         function render() {{
           document.getElementById("runtime-live").innerHTML =
-            `<div style='font-size:12px;color:#94a3ad;margin-bottom:6px'>Per-bot marks update from Binance socket in-place. Socket: ${{socketStatus}}.</div>` +
+            `<div style='font-size:12px;color:#94a3ad;margin-bottom:6px'>Each bot is mapped to its symbol subscription and marked from Binance socket trades in-place. Socket: ${{socketStatus}}.</div>` +
             rows.map(r => `<div style='display:grid;grid-template-columns:1.2fr .7fr .7fr .7fr .7fr;gap:8px;border-top:1px solid #26323b;padding:6px 0'>
-              <b>${{r.name}}</b><span>${{r.state}}</span><span>${{r.symbol}}</span><span>$${{mark(r).pnl.toFixed(2)}} / ${{mark(r).pnlPct.toFixed(2)}}%</span><span>last $${{Number(r.last).toFixed(6)}} | entry $${{Number(r.entry).toFixed(6)}} | uptime ${{ageText(r.deployed_at)}}</span>
+              <b>${{r.name}}</b><span>${{r.state}}</span><span>${{r.symbol}}</span><span>$${{mark(r).pnl.toFixed(2)}} / ${{mark(r).pnlPct.toFixed(2)}}%</span><span>last $${{Number(r.last).toFixed(6)}} | entry $${{Number(r.entry).toFixed(6)}} | tick ${{ageText(r.socket_seen_at)}} | uptime ${{ageText(r.deployed_at)}}</span>
             </div>`).join("");
         }}
         function connect() {{
@@ -1960,8 +1981,11 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
             const payload = JSON.parse(event.data);
             const data = payload.data || payload;
             const key = String(data.s || "").toLowerCase();
-            if (states[key] && data.p) {{
-              states[key].last = Number(data.p);
+            if (rowsBySymbol[key] && data.p) {{
+              rowsBySymbol[key].forEach(row => {{
+                row.last = Number(data.p);
+                row.socket_seen_at = new Date().toISOString();
+              }});
               render();
             }}
           }};

@@ -88,6 +88,8 @@ async def upsert_bot_instance(session: AsyncSession, values: dict[str, Any]) -> 
     if payload.get("state") in {"DEPLOYED", "RUNNING"} and payload.get("deployed_at") is None:
         payload["deployed_at"] = now
     payload["heartbeat_at"] = payload.get("heartbeat_at") or now
+    payload["created_at"] = payload.get("created_at") or now
+    payload["updated_at"] = payload.get("updated_at") or now
     stmt = mysql_insert(BotInstanceRow).values(**payload)
     stmt = stmt.on_duplicate_key_update(**{key: stmt.inserted[key] for key in payload if key != "name"})
     await session.execute(stmt)
@@ -232,6 +234,8 @@ def _clean_dict(values: dict[str, Any]) -> dict[str, Any]:
 def _clean_value(value: Any) -> Any:
     if value is pd.NaT:
         return None
+    if isinstance(value, str) and value.strip().lower() in {"", "nat", "nan", "none", "null"}:
+        return None
     if isinstance(value, float) and math.isnan(value):
         return None
     try:
@@ -243,6 +247,8 @@ def _clean_value(value: Any) -> Any:
 
 
 def _parse_datetime_string(value: str) -> datetime | str:
+    if value.strip().lower() in {"", "nat", "nan", "none", "null"}:
+        return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
