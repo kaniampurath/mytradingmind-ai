@@ -880,6 +880,28 @@ def transition_bot(name: str, state: str, reason: str) -> None:
     append_journal(str(row["name"]), str(row["symbol"]), f"BOT_{state}", "INFO", state, reason, {"strategy": row["strategy"]})
 
 
+def last_validation_for_bot(bot_name: str) -> pd.Series | None:
+    runs = load_validation_runs_frame()
+    if runs.empty or "bot_name" not in runs:
+        return None
+    matches = runs[runs["bot_name"].astype(str) == str(bot_name)]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def lifecycle_next_action(state: str) -> str:
+    return {
+        "DRAFT": "Backtest in Validation Lab",
+        "BACKTESTED": "Deploy in Bot Runtime",
+        "RUNNING": "Monitor or stop in Bot Runtime",
+        "DEPLOYED": "Monitor or stop in Bot Runtime",
+        "PAUSED": "Deploy or stop in Bot Runtime",
+        "STOPPED": "Backtest again before redeploying",
+        "FAILED": "Review Journal and Risk, then backtest again",
+    }.get(state, "Review bot state")
+
+
 def risk_gate_for_bot(bot: pd.Series, risk: dict[str, object]) -> tuple[bool, str]:
     if bool(risk.get("kill_switch", False)):
         log_diagnostic(logger, "risk_gate_block", bot=bot.get("name"), reason="kill_switch")
@@ -1743,13 +1765,14 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
     if not bots.empty:
         display = bots.copy()
         display["strategy_collection"] = display["parameters"].apply(lambda value: ", ".join((value or {}).get("strategies", [])) if isinstance(value, dict) else "")
+        display["next_action"] = display["state"].astype(str).apply(lifecycle_next_action)
         with st.expander("Configured Bot Definitions", expanded=True):
             st.dataframe(
-                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state", "status_reason"] if col in display]],
+                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state", "next_action", "status_reason"] if col in display]],
                 use_container_width=True,
                 hide_index=True,
             )
-    st.info("Use Validation Lab to backtest configured bot instances over a selected period. Use Bot Runtime to deploy, stop, and monitor 24x7 bot instances.")
+    st.info("Lifecycle: create bot here -> backtest in Validation Lab -> deploy/stop in Bot Runtime. Created bots are persisted and become available on the next screens immediately.")
 
 
 def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
@@ -1768,14 +1791,18 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
             matrix = all_matrix[all_matrix["strategy"].astype(str).isin(active_names)]
             aggregate = aggregate_strategy_matrix(matrix)
     runtime_tiles(bots, scan, matrix, aggregate)
+    runtime_live_metrics_component(bots, scan)
     st.markdown("### Runtime Controls")
     for _, bot in bots.iterrows():
         with st.expander(f"{bot['name']} controls", expanded=False):
-            c1, c2, c3 = st.columns(3)
-            if c1.button("Backtest", key=f"rt-bt-{bot['name']}", use_container_width=True):
-                transition_bot(str(bot["name"]), "BACKTESTED", "one-year Binance backtest completed")
-                st.success("Backtest state updated.")
-            if c2.button("Deploy", key=f"rt-dep-{bot['name']}", use_container_width=True):
+            state = str(bot.get("state", "DRAFT"))
+            validation = last_validation_for_bot(str(bot["name"]))
+            st.caption(f"State: {state}. Next action: {lifecycle_next_action(state)}.")
+            c1, c2 = st.columns(2)
+            if c1.button("Deploy", key=f"rt-dep-{bot['name']}", use_container_width=True, disabled=state != "BACKTESTED"):
+                if validation is None:
+                    st.error("Backtest this bot in Validation Lab before deployment.")
+                    continue
                 ok, reason = risk_gate_for_bot(bot, load_risk_settings())
                 if ok:
                     transition_bot(str(bot["name"]), "RUNNING", "deployed and running 24x7")
@@ -1784,7 +1811,7 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
                     transition_bot(str(bot["name"]), "FAILED", f"risk rejection: {reason}")
                     append_journal(str(bot["name"]), str(bot["symbol"]), "RISK_REJECTION", "WARN", "BLOCKED", reason)
                     st.error(reason)
-            if c3.button("Stop", key=f"rt-stop-{bot['name']}", use_container_width=True):
+            if c2.button("Stop", key=f"rt-stop-{bot['name']}", use_container_width=True, disabled=state not in {"RUNNING", "DEPLOYED"}):
                 transition_bot(str(bot["name"]), "STOPPED", "stopped by user")
                 st.warning("Bot stopped.")
 
@@ -1814,6 +1841,7 @@ def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, 
             f"<div class='scan-meta'>{strategy} | {symbol}</div>"
             f"<div class='status-value {pnl_class}'>${pnl:,.2f}</div>"
             f"<div class='scan-meta'>health {health} | risk {row.get('status_reason', '')}</div>"
+            f"<div class='scan-meta'>next {lifecycle_next_action(state)}</div>"
             f"<div class='scan-meta'>DD {drawdown:.2f}% | win {win_rate:.1f}% | PF {pf:.2f}</div>"
             f"<div class='scan-meta'>Sharpe {sharpe:.2f} | expectancy {expectancy:.3f}% | uptime {stream_age_text(row.get('deployed_at', row.get('created_at', '')))}</div>"
             f"<div class='scan-meta'>positions {1 if state in {'RUNNING', 'DEPLOYED'} else 0} | heartbeat {stream_age_text(row.get('heartbeat_at', ''))}</div>"
@@ -1821,6 +1849,54 @@ def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, 
         )
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> None:
+    if bots.empty:
+        return
+    scan = normalize_scan_columns(scan) if not scan.empty else scan
+    rows: list[dict[str, object]] = []
+    for _, bot in bots.iterrows():
+        symbol = str(bot.get("symbol", ""))
+        scan_row = scan[scan["symbol"].astype(str) == symbol].iloc[0] if not scan.empty and symbol in set(scan["symbol"].astype(str)) else pd.Series(dtype=object)
+        rows.append(
+            {
+                "name": str(bot.get("name", "")),
+                "state": str(bot.get("state", "DRAFT")),
+                "symbol": symbol,
+                "pnl": float(scan_row.get("active_pnl", 0.0) or 0.0),
+                "pnl_pct": float(scan_row.get("active_pnl_pct", 0.0) or 0.0),
+                "deployed_at": str(bot.get("deployed_at", "") or ""),
+                "heartbeat_at": str(bot.get("heartbeat_at", "") or ""),
+            }
+        )
+    components.html(
+        f"""
+        <div id="runtime-live" style="font-family:Inter,Arial,sans-serif;color:#e8edf2;background:#111820;border:1px solid #26323b;border-radius:8px;padding:10px;margin:8px 0;"></div>
+        <script>
+        const rows = {json.dumps(rows)};
+        function ageText(value) {{
+          if (!value) return "pending";
+          const ts = new Date(value);
+          if (Number.isNaN(ts.getTime())) return "pending";
+          const secs = Math.max(0, Math.floor((Date.now() - ts.getTime()) / 1000));
+          if (secs < 60) return secs + "s";
+          const mins = Math.floor(secs / 60);
+          return mins + "m " + (secs % 60) + "s";
+        }}
+        function render() {{
+          document.getElementById("runtime-live").innerHTML =
+            "<div style='font-size:12px;color:#94a3ad;margin-bottom:6px'>Live runtime metrics update in-place; persisted state comes from MariaDB/file cache.</div>" +
+            rows.map(r => `<div style='display:grid;grid-template-columns:1.2fr .7fr .7fr .7fr .7fr;gap:8px;border-top:1px solid #26323b;padding:6px 0'>
+              <b>${{r.name}}</b><span>${{r.state}}</span><span>${{r.symbol}}</span><span>$${{Number(r.pnl).toFixed(2)}} / ${{Number(r.pnl_pct).toFixed(2)}}%</span><span>uptime ${{ageText(r.deployed_at)}} | hb ${{ageText(r.heartbeat_at)}}</span>
+            </div>`).join("");
+        }}
+        render();
+        setInterval(render, 1000);
+        </script>
+        """,
+        height=120 + min(260, 42 * len(rows)),
+    )
 
 
 def bot_instance_tiles(bots: pd.DataFrame) -> None:
@@ -1983,9 +2059,11 @@ def journal_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> No
     if not correlation.empty:
         st.markdown("### Backtest To Journal Correlation")
         st.dataframe(correlation, use_container_width=True, hide_index=True)
-        st.markdown("### Improvement Suggestions")
+        st.markdown("### Strategy Change Suggestions")
         for suggestion in journal_improvement_suggestions(correlation):
             st.info(suggestion)
+        for suggestion in strategy_change_suggestions(correlation):
+            st.warning(suggestion)
     counts = journal.groupby("event_type").size().reset_index(name="events").sort_values("events", ascending=False)
     st.plotly_chart(layout_chart(go.Figure(go.Bar(x=counts["event_type"], y=counts["events"], marker_color="#79a7ff")), 280), use_container_width=True)
     st.dataframe(journal.sort_values("event_time", ascending=False), use_container_width=True, hide_index=True)
@@ -2067,6 +2145,31 @@ def journal_improvement_suggestions(correlation: pd.DataFrame) -> list[str]:
     return messages[:4]
 
 
+def strategy_change_suggestions(correlation: pd.DataFrame) -> list[str]:
+    if correlation.empty:
+        return []
+    suggestions: list[str] = []
+    for _, row in correlation.head(5).iterrows():
+        text = strategy_change_suggestion_for_metrics(row.to_dict())
+        suggestions.append(f"{row['bot_name']} / {row['symbol']}: {text}")
+    return suggestions
+
+
+def strategy_change_suggestion_for_metrics(metrics: dict[str, object]) -> str:
+    changes: list[str] = []
+    if float(metrics.get("max_drawdown_pct", 0.0) or 0.0) >= 12:
+        changes.append("reduce position sizing and add a volatility-expansion pause")
+    if float(metrics.get("profit_factor", 0.0) or 0.0) < 1.3:
+        changes.append("tighten exits, improve reward/risk, or reject wide-spread entries")
+    if float(metrics.get("win_rate", 0.0) or 0.0) < 40:
+        changes.append("raise min confidence and require stronger orderflow confirmation")
+    if int(metrics.get("consecutive_losses", 0) or 0) >= 3:
+        changes.append("add a cooldown after three consecutive losses")
+    if int(metrics.get("risk_rule_blocked_trades", metrics.get("risk_blocks", 0)) or 0) > 0:
+        changes.append("lower bot capital or trade frequency to pass hard risk gates")
+    return "; ".join(changes or ["keep parameters stable and collect more live journal evidence"])
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def load_backtest_trades() -> pd.DataFrame:
     path = Path("reports/top10_replay_trades.csv")
@@ -2112,8 +2215,9 @@ def validation_screen() -> None:
         with st.expander("Bots available for backtest", expanded=True):
             display = bots.copy()
             display["strategy_collection"] = display["parameters"].apply(lambda value: ", ".join((value or {}).get("strategies", [])) if isinstance(value, dict) else "")
+            display["next_action"] = display["state"].astype(str).apply(lifecycle_next_action)
             st.dataframe(
-                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state"] if col in display]],
+                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state", "next_action"] if col in display]],
                 use_container_width=True,
                 hide_index=True,
             )
@@ -2141,17 +2245,25 @@ def validation_screen() -> None:
             "capital": capital,
             "fees_bps": fees,
             "slippage_bps": slippage,
-            "state": "COMPLETED",
+            "state": "FAILED" if "error" in metrics_result else "COMPLETED",
             "metrics": metrics_result,
         }
         save_validation_run(validation_row)
+        if "error" in metrics_result:
+            transition_bot(selected_bot, "FAILED", str(metrics_result["error"]))
+        else:
+            transition_bot(
+                selected_bot,
+                "BACKTESTED",
+                f"backtest completed: trades {int(metrics_result.get('total_trades', 0))}, PF {float(metrics_result.get('profit_factor', 0.0)):.2f}, DD {float(metrics_result.get('max_drawdown_pct', 0.0)):.1f}%",
+            )
         append_journal(
             selected_bot,
             symbol,
             "VALIDATION_RUN",
             "INFO",
             "COMPLETED",
-            "validation/backtest completed; " + improvement_suggestion_for_row(pd.Series(metrics_result), 0, int(metrics_result.get("total_trades", 0)) - int(metrics_result.get("total_trades", 0) * float(metrics_result.get("win_rate", 0.0)) / 100)),
+            "validation/backtest completed; " + strategy_change_suggestion_for_metrics(metrics_result),
             validation_row["metrics"],
         )
         show_validation_result(metrics_result, trades)
@@ -2292,6 +2404,7 @@ with st.sidebar:
             "JOURNAL",
             "VALIDATION LAB",
         ],
+        key="screen",
     )
     st.divider()
     default_symbol = selectable_symbols[0] if selectable_symbols else ""
