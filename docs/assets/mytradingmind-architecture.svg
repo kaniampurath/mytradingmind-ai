@@ -1,0 +1,225 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+  <title id="title">mytradingmind.ai layered architecture</title>
+  <desc id="desc">Color architecture diagram showing exchange data, market ingestion, feature computation, strategy layer, safety gates, headless runtime, operator UI, persistence, validation, and LLM reasoning.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#07111f"/>
+      <stop offset="48%" stop-color="#0d1728"/>
+      <stop offset="100%" stop-color="#101827"/>
+    </linearGradient>
+    <linearGradient id="exchange" x1="0" x2="1">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="data" x1="0" x2="1">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#5eead4"/>
+    </linearGradient>
+    <linearGradient id="compute" x1="0" x2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+    <linearGradient id="strategy" x1="0" x2="1">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="safety" x1="0" x2="1">
+      <stop offset="0%" stop-color="#be123c"/>
+      <stop offset="100%" stop-color="#fb7185"/>
+    </linearGradient>
+    <linearGradient id="runtime" x1="0" x2="1">
+      <stop offset="0%" stop-color="#c2410c"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="ui" x1="0" x2="1">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="store" x1="0" x2="1">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+    <linearGradient id="ai" x1="0" x2="1">
+      <stop offset="0%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowHot" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#fb7185"/>
+    </marker>
+    <style>
+      .title { font: 800 44px Inter, Segoe UI, Arial, sans-serif; fill: #f8fafc; letter-spacing: .2px; }
+      .subtitle { font: 500 18px Inter, Segoe UI, Arial, sans-serif; fill: #b6c4d6; }
+      .layer-title { font: 800 19px Inter, Segoe UI, Arial, sans-serif; fill: #f8fafc; }
+      .node-title { font: 800 17px Inter, Segoe UI, Arial, sans-serif; fill: #f8fafc; }
+      .node-text { font: 500 13px Inter, Segoe UI, Arial, sans-serif; fill: #dbeafe; }
+      .tiny { font: 700 11px Inter, Segoe UI, Arial, sans-serif; fill: #e2e8f0; letter-spacing: .7px; }
+      .pill-text { font: 800 12px Inter, Segoe UI, Arial, sans-serif; fill: #07111f; letter-spacing: .6px; }
+      .box { filter: url(#shadow); stroke: rgba(255,255,255,.22); stroke-width: 1.2; }
+      .panel { fill: rgba(15,23,42,.76); stroke: rgba(148,163,184,.25); stroke-width: 1; }
+      .arrow { fill: none; stroke: #94a3b8; stroke-width: 2.4; marker-end: url(#arrow); opacity: .85; }
+      .arrow-hot { fill: none; stroke: #fb7185; stroke-width: 3; marker-end: url(#arrowHot); opacity: .9; }
+      .dash { stroke-dasharray: 8 8; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1050" fill="url(#bg)"/>
+  <path d="M0 132 C250 80 385 195 620 115 C890 24 1080 142 1600 72 L1600 0 L0 0 Z" fill="#0ea5e9" opacity=".08"/>
+  <path d="M0 1015 C310 905 540 1060 810 948 C1100 828 1280 930 1600 850 L1600 1050 L0 1050 Z" fill="#8b5cf6" opacity=".09"/>
+
+  <text x="70" y="72" class="title">mytradingmind.ai Architecture</text>
+  <text x="72" y="108" class="subtitle">Crypto-neutral, testnet-first trading operating system with headless runtime, hard risk gates, validation, journaling, and operator controls.</text>
+
+  <rect x="70" y="135" width="1460" height="805" rx="28" class="panel"/>
+
+  <!-- Left vertical spine -->
+  <rect x="102" y="185" width="14" height="705" rx="7" fill="#1e293b"/>
+  <circle cx="109" cy="220" r="13" fill="#22d3ee"/>
+  <circle cx="109" cy="320" r="13" fill="#5eead4"/>
+  <circle cx="109" cy="420" r="13" fill="#93c5fd"/>
+  <circle cx="109" cy="520" r="13" fill="#c084fc"/>
+  <circle cx="109" cy="620" r="13" fill="#fb7185"/>
+  <circle cx="109" cy="720" r="13" fill="#f59e0b"/>
+  <circle cx="109" cy="820" r="13" fill="#a78bfa"/>
+
+  <!-- Exchange -->
+  <text x="145" y="180" class="layer-title">L0 Exchange Boundary</text>
+  <rect x="145" y="200" width="235" height="86" rx="18" fill="url(#exchange)" class="box"/>
+  <text x="168" y="233" class="node-title">Binance Spot Testnet</text>
+  <text x="168" y="258" class="node-text">candles, trades, order book</text>
+  <rect x="405" y="200" width="205" height="86" rx="18" fill="#12334a" class="box"/>
+  <text x="428" y="233" class="node-title">Future Adapter</text>
+  <text x="428" y="258" class="node-text">live spot / futures phase</text>
+
+  <!-- Market data -->
+  <text x="145" y="318" class="layer-title">L1 Market Data</text>
+  <rect x="145" y="340" width="168" height="86" rx="18" fill="url(#data)" class="box"/>
+  <text x="166" y="372" class="node-title">Backfill</text>
+  <text x="166" y="397" class="node-text">1-year candles</text>
+  <rect x="333" y="340" width="168" height="86" rx="18" fill="url(#data)" class="box"/>
+  <text x="354" y="372" class="node-title">Live Scanner</text>
+  <text x="354" y="397" class="node-text">configured universe</text>
+  <rect x="521" y="340" width="168" height="86" rx="18" fill="url(#data)" class="box"/>
+  <text x="542" y="372" class="node-title">Socket Stream</text>
+  <text x="542" y="397" class="node-text">ticks, book, heartbeat</text>
+  <rect x="709" y="340" width="168" height="86" rx="18" fill="#115e59" class="box"/>
+  <text x="730" y="372" class="node-title">Feed Health</text>
+  <text x="730" y="397" class="node-text">stale feed, reconnects</text>
+
+  <!-- Compute -->
+  <text x="145" y="456" class="layer-title">L2 Features, Orderflow, Regime</text>
+  <rect x="145" y="478" width="168" height="86" rx="18" fill="url(#compute)" class="box"/>
+  <text x="166" y="510" class="node-title">Bar Builder</text>
+  <text x="166" y="535" class="node-text">closed candle parity</text>
+  <rect x="333" y="478" width="190" height="86" rx="18" fill="url(#compute)" class="box"/>
+  <text x="354" y="510" class="node-title">Feature Engine</text>
+  <text x="354" y="535" class="node-text">ATR, EMA, VWAP, RVOL</text>
+  <rect x="543" y="478" width="202" height="86" rx="18" fill="url(#compute)" class="box"/>
+  <text x="564" y="510" class="node-title">Orderflow Engine</text>
+  <text x="564" y="535" class="node-text">delta, CVD, spread, velocity</text>
+  <rect x="765" y="478" width="180" height="86" rx="18" fill="url(#compute)" class="box"/>
+  <text x="786" y="510" class="node-title">Regime Engine</text>
+  <text x="786" y="535" class="node-text">trend, chop, panic</text>
+
+  <!-- Strategy and validation -->
+  <text x="145" y="594" class="layer-title">L3 Strategy And Validation</text>
+  <rect x="145" y="616" width="185" height="86" rx="18" fill="url(#strategy)" class="box"/>
+  <text x="166" y="648" class="node-title">Strategy Registry</text>
+  <text x="166" y="673" class="node-text">reusable plugins</text>
+  <rect x="350" y="616" width="185" height="86" rx="18" fill="url(#strategy)" class="box"/>
+  <text x="371" y="648" class="node-title">Bot Framework</text>
+  <text x="371" y="673" class="node-text">assemble bot instances</text>
+  <rect x="555" y="616" width="185" height="86" rx="18" fill="url(#strategy)" class="box"/>
+  <text x="576" y="648" class="node-title">Signal Engine</text>
+  <text x="576" y="673" class="node-text">watch, buy, in-trade</text>
+  <rect x="760" y="616" width="185" height="86" rx="18" fill="#6d28d9" class="box"/>
+  <text x="781" y="648" class="node-title">Validation Lab</text>
+  <text x="781" y="673" class="node-text">backtest, certify, metrics</text>
+
+  <!-- Safety -->
+  <text x="145" y="732" class="layer-title">L4 Decision And Safety Gates</text>
+  <rect x="145" y="754" width="190" height="90" rx="18" fill="url(#safety)" class="box"/>
+  <text x="166" y="786" class="node-title">Consensus Engine</text>
+  <text x="166" y="811" class="node-text">strategy + regime + flow</text>
+  <rect x="355" y="754" width="190" height="90" rx="18" fill="url(#safety)" class="box"/>
+  <text x="376" y="786" class="node-title">Orderflow Verifier</text>
+  <text x="376" y="811" class="node-text">required approval</text>
+  <rect x="565" y="754" width="190" height="90" rx="18" fill="url(#safety)" class="box"/>
+  <text x="586" y="786" class="node-title">Risk Gates</text>
+  <text x="586" y="811" class="node-text">cash, exposure, kill switch</text>
+  <rect x="775" y="754" width="190" height="90" rx="18" fill="#9f1239" class="box"/>
+  <text x="796" y="786" class="node-title">Protection Rules</text>
+  <text x="796" y="811" class="node-text">fail closed by design</text>
+
+  <!-- Runtime -->
+  <text x="1020" y="180" class="layer-title">L5 Headless Runtime</text>
+  <rect x="1020" y="200" width="220" height="86" rx="18" fill="url(#runtime)" class="box"/>
+  <text x="1043" y="233" class="node-title">Shared Command Bus</text>
+  <text x="1043" y="258" class="node-text">UI and CLI commands</text>
+  <rect x="1260" y="200" width="210" height="86" rx="18" fill="url(#runtime)" class="box"/>
+  <text x="1283" y="233" class="node-title">Runtime Manager</text>
+  <text x="1283" y="258" class="node-text">state transitions, audit</text>
+  <rect x="1020" y="310" width="220" height="86" rx="18" fill="#92400e" class="box"/>
+  <text x="1043" y="343" class="node-title">Bot Registry</text>
+  <text x="1043" y="368" class="node-text">persistent definitions</text>
+  <rect x="1260" y="310" width="210" height="86" rx="18" fill="#92400e" class="box"/>
+  <text x="1283" y="343" class="node-title">Bot Runner</text>
+  <text x="1283" y="368" class="node-text">24x7 without browser</text>
+  <rect x="1140" y="420" width="215" height="86" rx="18" fill="#78350f" class="box"/>
+  <text x="1163" y="453" class="node-title">Heartbeat Monitor</text>
+  <text x="1163" y="478" class="node-text">runtime and bot liveness</text>
+
+  <!-- UI -->
+  <text x="1020" y="558" class="layer-title">L6 Operator Cockpit</text>
+  <rect x="1020" y="580" width="450" height="145" rx="22" fill="url(#ui)" class="box"/>
+  <text x="1045" y="614" class="node-title">Streamlit Ops Console</text>
+  <text x="1045" y="642" class="node-text">Dashboard | Live Trading | Order Flow | Risk</text>
+  <text x="1045" y="668" class="node-text">Bot Framework | Bot Runtime | Bot Admin</text>
+  <text x="1045" y="694" class="node-text">Journal | Validation Lab | System Health</text>
+
+  <!-- Persistence -->
+  <text x="1020" y="760" class="layer-title">L7 Persistence And Observability</text>
+  <rect x="1020" y="782" width="140" height="86" rx="18" fill="url(#store)" class="box"/>
+  <text x="1040" y="815" class="node-title">MariaDB</text>
+  <text x="1040" y="840" class="node-text">durable truth</text>
+  <rect x="1180" y="782" width="120" height="86" rx="18" fill="#475569" class="box"/>
+  <text x="1200" y="815" class="node-title">Redis</text>
+  <text x="1200" y="840" class="node-text">live cache</text>
+  <rect x="1320" y="782" width="150" height="86" rx="18" fill="#475569" class="box"/>
+  <text x="1340" y="815" class="node-title">Journal</text>
+  <text x="1340" y="840" class="node-text">decisions, audit</text>
+
+  <!-- LLM -->
+  <rect x="1030" y="900" width="430" height="78" rx="22" fill="url(#ai)" class="box"/>
+  <text x="1055" y="932" class="node-title">L8 LLM Reasoning Layer</text>
+  <text x="1055" y="957" class="node-text">OpenAI or deterministic rule fallback; explain, challenge, summarize, veto only</text>
+
+  <!-- Arrows main -->
+  <path class="arrow" d="M260 286 L260 335"/>
+  <path class="arrow" d="M420 426 L420 473"/>
+  <path class="arrow" d="M640 564 L640 611"/>
+  <path class="arrow-hot" d="M655 702 L655 749"/>
+  <path class="arrow" d="M965 800 C1000 800 990 245 1015 245"/>
+  <path class="arrow" d="M1240 245 L1255 245"/>
+  <path class="arrow" d="M1365 286 L1365 305"/>
+  <path class="arrow" d="M1365 396 C1365 440 1320 438 1355 580"/>
+  <path class="arrow" d="M1245 506 L1245 575"/>
+  <path class="arrow" d="M1245 725 L1245 777"/>
+  <path class="arrow" d="M1245 868 L1245 895"/>
+  <path class="arrow dash" d="M1030 940 C910 940 1010 655 950 655"/>
+  <path class="arrow dash" d="M1030 940 C925 900 925 797 970 797"/>
+  <path class="arrow dash" d="M1458 940 C1510 830 1500 650 1470 650"/>
+
+  <!-- Badges -->
+  <rect x="1188" y="58" width="142" height="34" rx="17" fill="#bbf7d0"/>
+  <text x="1210" y="80" class="pill-text">TESTNET FIRST</text>
+  <rect x="1344" y="58" width="126" height="34" rx="17" fill="#fde68a"/>
+  <text x="1364" y="80" class="pill-text">FAIL CLOSED</text>
+  <rect x="70" y="965" width="415" height="38" rx="19" fill="#172554" stroke="#38bdf8" opacity=".95"/>
+  <text x="92" y="990" class="tiny">UI = OBSERVE + CONTROL | RUNTIME = 24x7 HEADLESS | RISK = HARD AUTHORITY</text>
+</svg>

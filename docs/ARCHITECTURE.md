@@ -2,6 +2,8 @@
 
 mytradingmind.ai is designed as a crypto-neutral, testnet-first trading operating system. The dashboard is only the operator cockpit; the runtime, command bus, persistence, validation, and safety gates are separate layers so bots can continue operating without a browser session.
 
+![mytradingmind.ai layered architecture](assets/mytradingmind-architecture.svg)
+
 ## Layered System Architecture
 
 ```mermaid
