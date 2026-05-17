@@ -11,12 +11,41 @@ The system is designed around safety-first operation:
 - dashboard screens are selection-based, not tied to one coin
 - live-money trading remains gated until testnet certification is complete
 
+## High-Level Architecture
+
+```mermaid
+flowchart LR
+    Binance["Binance Spot Testnet<br/>public candles, trades, order book"] --> MarketData["Market Data Services<br/>backfill, scanner, websocket stream"]
+    MarketData --> Stores["Operational State<br/>MariaDB, Redis, reports cache"]
+    Stores --> Dashboard["Streamlit Ops Console<br/>Dashboard, Live Trading, Order Flow, Risk"]
+    Stores --> Runtime["Headless Runtime<br/>24x7 bot lifecycle, heartbeats, runtime state"]
+    Dashboard --> Admin["Bot Admin<br/>start, stop, pause, resume, validation commands"]
+    Admin --> CommandBus["Shared Command Bus<br/>idempotent commands, audit logging"]
+    CLI["CLI<br/>python -m mytradingmind.runtime"] --> CommandBus
+    CommandBus --> Runtime
+    Runtime --> Risk["Risk Gates<br/>capital, exposure, trade frequency, kill switch"]
+    Risk --> Strategies["Strategy-Agnostic Bot Host<br/>pluggable reusable strategies"]
+    Strategies --> Validation["Validation Lab<br/>backtests, certification, metrics"]
+    Strategies --> Journal["Journal<br/>decisions, risk blocks, runtime events"]
+    LLM["LLM Reasoning<br/>OpenAI or rule fallback"] --> Admin
+    LLM --> Journal
+    LLM --> Validation
+    LLM --> Dashboard
+```
+
+Detailed architecture notes:
+
+[Architecture Overview](docs/ARCHITECTURE.md)
+
 ## Current Screens
 
+- Dashboard
 - Live Trading
 - Order Flow
 - Risk
 - Bot Framework
+- Bot Runtime
+- Bot Admin
 - System Health
 - Journal
 - Validation Lab
@@ -109,8 +138,8 @@ cp deploy/ubuntu.env.example .env
 nano .env
 mkdir -p data reports logs backups
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mariadb redis
-docker compose -f deploy/docker-compose.yml --env-file .env run --rm dashboard python scripts/init_db.py
-docker compose -f deploy/docker-compose.yml --env-file .env up -d --build dashboard scanner
+docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/init_db.py
+docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mytradingmind_runtime mytradingmind_dashboard scanner
 ```
 
 ## GitHub Upload
