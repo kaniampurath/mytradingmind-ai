@@ -85,7 +85,9 @@ class RuntimeManager:
 
     @staticmethod
     def llm_state() -> str:
-        if settings.llm_mode.lower() == "rules" or not settings.llm_enabled:
+        llm_mode = str(getattr(settings, "llm_mode", "rules"))
+        llm_enabled = bool(getattr(settings, "llm_enabled", False))
+        if llm_mode.lower() == "rules" or not llm_enabled:
             return "RULE_BASED"
         return "OPENAI_READY" if bool(__import__("os").environ.get("OPENAI_API_KEY")) else "RULE_BASED"
 

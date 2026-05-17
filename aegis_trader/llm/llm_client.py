@@ -13,15 +13,19 @@ from aegis_trader.llm.prompts import PROMPT_VERSION, TRADE_REVIEW_PROMPT
 class LLMClient:
     def review_trade(self, context: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
-        if settings.llm_mode.lower() == "rules" or not settings.llm_enabled or not os.environ.get("OPENAI_API_KEY"):
+        llm_mode = str(getattr(settings, "llm_mode", "rules"))
+        llm_enabled = bool(getattr(settings, "llm_enabled", False))
+        llm_model = str(getattr(settings, "llm_model", getattr(settings, "openai_model", "gpt-4o")))
+        llm_timeout_ms = int(getattr(settings, "llm_timeout_ms", 2000))
+        if llm_mode.lower() == "rules" or not llm_enabled or not os.environ.get("OPENAI_API_KEY"):
             response = rule_based_trade_review(context)
             return self._audit(response, "rules", True, started)
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=settings.llm_timeout_ms / 1000)
+            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=llm_timeout_ms / 1000)
             completion = client.chat.completions.create(
-                model=settings.llm_model,
+                model=llm_model,
                 messages=[
                     {"role": "system", "content": TRADE_REVIEW_PROMPT},
                     {"role": "user", "content": json.dumps(context, default=str)},
@@ -29,7 +33,7 @@ class LLMClient:
                 response_format={"type": "json_object"},
             )
             content = completion.choices[0].message.content or "{}"
-            return self._audit(json.loads(content), settings.llm_model, False, started)
+            return self._audit(json.loads(content), llm_model, False, started)
         except Exception:
             response = rule_based_trade_review(context)
             return self._audit(response, "rules", True, started)
