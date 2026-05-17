@@ -17,6 +17,7 @@ from plotly.subplots import make_subplots
 
 from aegis_trader.analytics.replay_metrics import load_feature_file
 from aegis_trader.analytics.strategy_reports import aggregate_strategy_matrix, run_strategy_matrix
+from aegis_trader.analytics.time_utils import utc_datetime_series, utc_day_window
 from aegis_trader.bot.framework import BotDeployment, StrategyAgnosticBot
 from aegis_trader.core.config import settings
 from aegis_trader.core.enums import CertificationState
@@ -2507,8 +2508,8 @@ def run_bot_validation(bot: pd.Series, symbol: str, timeframe: str, start_date: 
         return {"error": f"no feature file found for {symbol}", "total_trades": 0, "risk_rule_blocked_trades": 1}, pd.DataFrame()
     features = load_feature_file(path)
     if "open_time" in features:
-        start_ts = pd.Timestamp(start_date)
-        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        start_ts, end_ts = utc_day_window(start_date, end_date)
+        features["open_time"] = utc_datetime_series(features["open_time"])
         features = features[(features["open_time"] >= start_ts) & (features["open_time"] < end_ts)]
     if len(features) < 210:
         return {"error": "selected period has insufficient candles for indicator warmup", "total_trades": 0, "risk_rule_blocked_trades": 1}, pd.DataFrame()
