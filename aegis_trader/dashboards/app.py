@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,9 +12,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+from dotenv import dotenv_values
 from plotly.subplots import make_subplots
 
+from aegis_trader.analytics.replay_metrics import load_feature_file
 from aegis_trader.analytics.strategy_reports import aggregate_strategy_matrix, run_strategy_matrix
+from aegis_trader.bot.framework import BotDeployment, StrategyAgnosticBot
 from aegis_trader.core.config import settings
 from aegis_trader.core.enums import CertificationState
 from aegis_trader.core.logging import configure_logging, log_diagnostic, redact_url
@@ -1197,6 +1202,31 @@ def portfolio_performance_overview(scan: pd.DataFrame, bots: pd.DataFrame) -> No
         st.plotly_chart(layout_chart(fig, 300), use_container_width=True)
 
 
+def dashboard_screen(summary: dict[str, float | str]) -> None:
+    scan = load_live_scan()
+    bots = load_bot_instances()
+    portfolio_performance_overview(scan, bots)
+    status_row(summary)
+    st.markdown("### 1Y Trading System Backtest")
+    matrix, aggregate = load_strategy_matrix(tuple(STRATEGY_REGISTRY))
+    if aggregate.empty:
+        st.info("No one-year Binance feature files are available yet. Run the backfill and metrics job first.")
+        return
+    strategy_system_charts(matrix, aggregate)
+    strategy_tiles(aggregate)
+
+
+def strategy_system_charts(matrix: pd.DataFrame, aggregate: pd.DataFrame) -> None:
+    fig = make_subplots(rows=2, cols=2, subplot_titles=("PnL by Trading System", "Max Drawdown", "Win Rate", "Confidence"))
+    fig.add_trace(go.Bar(x=aggregate["strategy"], y=aggregate["total_pnl"], marker_color=np.where(aggregate["total_pnl"] >= 0, "#55d49a", "#ff6f7d"), name="PnL"), row=1, col=1)
+    fig.add_trace(go.Bar(x=aggregate["strategy"], y=aggregate["max_drawdown_pct"], marker_color="#ffb86b", name="Drawdown"), row=1, col=2)
+    fig.add_trace(go.Bar(x=aggregate["strategy"], y=aggregate["win_rate"], marker_color="#79a7ff", name="Win Rate"), row=2, col=1)
+    fig.add_trace(go.Bar(x=aggregate["strategy"], y=aggregate["confidence_score"], marker_color="#55d49a", name="Confidence"), row=2, col=2)
+    st.plotly_chart(layout_chart(fig, 560), use_container_width=True)
+    with st.expander("Symbol by trading system", expanded=False):
+        st.dataframe(matrix, use_container_width=True, hide_index=True)
+
+
 def price_panel(candles: pd.DataFrame) -> go.Figure:
     symbol = str(candles["symbol"].iloc[-1]) if "symbol" in candles and not candles.empty else "Selected crypto"
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.04)
@@ -1403,6 +1433,8 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     selected = st.selectbox("Crypto", symbols, index=0)
     selected_row = scan[scan["symbol"].astype(str) == selected].iloc[0] if not scan.empty and selected in set(scan["symbol"].astype(str)) else None
     if selected_row is not None:
+        watchlist = orderflow_watchlist(scan)
+        st.markdown(orderflow_guidance(selected_row, watchlist), unsafe_allow_html=True)
         buy_pressure = float(selected_row.get("buy_score", 0.0))
         sell_pressure = float(selected_row.get("sell_score", 0.0))
         orderflow_score = float(selected_row.get("orderflow_score", 0.0))
@@ -1421,6 +1453,21 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
         g.metric("Delta / Flow", f"{orderflow_score:.0f}%")
         st.markdown(orderflow_insight(selected_row), unsafe_allow_html=True)
         st.caption(str(selected_row.get("orderflow_reason", "awaiting selected coin orderflow")))
+        if not watchlist.empty:
+            with st.expander("Orderflow names to watch", expanded=True):
+                st.dataframe(
+                    watchlist,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "orderflow_watch_score": st.column_config.ProgressColumn("Watch", min_value=0, max_value=100, format="%.0f%%"),
+                        "orderflow_score": st.column_config.ProgressColumn("Flow", min_value=0, max_value=100, format="%.0f%%"),
+                        "buy_score": st.column_config.ProgressColumn("Buy", min_value=0, max_value=100, format="%.0f%%"),
+                        "stream_taker_buy_ratio": st.column_config.ProgressColumn("Taker Buy", min_value=0, max_value=1, format="%.0f%%"),
+                        "stream_depth_imbalance": st.column_config.NumberColumn("Book", format="%+.2f"),
+                        "stream_spread_bps": st.column_config.NumberColumn("Spread bps", format="%.2f"),
+                    },
+                )
     left, right = st.columns([1.45, 1])
     left.plotly_chart(orderflow_panel(candles, tape), use_container_width=True)
     right.plotly_chart(depth_panel(book), use_container_width=True)
@@ -1451,6 +1498,92 @@ def orderflow_insight(row: pd.Series) -> str:
         f"{aggressor.title()}. {absorption.title()}."
         "</div>"
     )
+
+
+def orderflow_watchlist(scan: pd.DataFrame) -> pd.DataFrame:
+    if scan.empty:
+        return pd.DataFrame()
+    view = normalize_scan_columns(scan).copy()
+    view["orderflow_watch_score"] = (
+        view["orderflow_score"].astype(float) * 0.45
+        + view["buy_score"].astype(float) * 0.25
+        + view["stream_taker_buy_ratio"].astype(float).fillna(0) * 100 * 0.15
+        + (view["stream_depth_imbalance"].astype(float).fillna(0).clip(lower=0) * 100).clip(upper=100) * 0.10
+        + (100 - view["stream_spread_bps"].astype(float).fillna(25).clip(0, 25) * 4) * 0.05
+    )
+    cols = [
+        "symbol",
+        "scan_bucket",
+        "orderflow_watch_score",
+        "orderflow_score",
+        "buy_score",
+        "stream_taker_buy_ratio",
+        "stream_depth_imbalance",
+        "stream_spread_bps",
+        "orderflow_reason",
+    ]
+    return view.sort_values("orderflow_watch_score", ascending=False)[cols].head(6)
+
+
+def orderflow_guidance(row: pd.Series, watchlist: pd.DataFrame) -> str:
+    metrics = {
+        "symbol": str(row.get("symbol", "")),
+        "bucket": str(row.get("scan_bucket", "")),
+        "orderflow_score": float(row.get("orderflow_score", 0.0) or 0.0),
+        "buy_score": float(row.get("buy_score", 0.0) or 0.0),
+        "sell_score": float(row.get("sell_score", 0.0) or 0.0),
+        "depth": float(row.get("stream_depth_imbalance", 0.0) or 0.0),
+        "taker_buy": float(row.get("stream_taker_buy_ratio", 0.0) or 0.0),
+        "spread_bps": float(row.get("stream_spread_bps", 0.0) or 0.0),
+    }
+    watch = watchlist[["symbol", "orderflow_watch_score", "orderflow_reason"]].to_dict(orient="records") if not watchlist.empty else []
+    text = orderflow_guidance_cached(metrics["symbol"], json.dumps(metrics, sort_keys=True), json.dumps(watch, sort_keys=True))
+    return f"<div class='buy-alert'><b>How to use this:</b> {text}</div>"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def orderflow_guidance_cached(symbol: str, metrics_json: str, watchlist_json: str) -> str:
+    metrics = json.loads(metrics_json)
+    watch = json.loads(watchlist_json)
+    fallback = _rule_orderflow_guidance(symbol, metrics, watch)
+    api_key = openai_api_key()
+    if not api_key:
+        return fallback
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, timeout=8.0)
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[
+                {"role": "system", "content": "Give concise institutional orderflow guidance. No promises. Use watch, wait, or avoid language."},
+                {"role": "user", "content": f"Selected symbol metrics: {metrics_json}. Orderflow watchlist: {watchlist_json}."},
+            ],
+            max_tokens=70,
+        )
+        return (response.choices[0].message.content or fallback).strip()
+    except Exception as exc:
+        log_diagnostic(logger, "orderflow_llm_fallback", reason=str(exc))
+        return fallback
+
+
+def _rule_orderflow_guidance(symbol: str, metrics: dict[str, object], watch: list[dict[str, object]]) -> str:
+    flow = float(metrics.get("orderflow_score", 0.0) or 0.0)
+    buy = float(metrics.get("buy_score", 0.0) or 0.0)
+    spread = float(metrics.get("spread_bps", 0.0) or 0.0)
+    top = ", ".join(str(item.get("symbol", "")) for item in watch[:3]) or "none yet"
+    if flow >= 65 and buy >= 60 and spread <= 12:
+        return f"{symbol} has constructive orderflow; watch confirmation and compare it against the strongest flow names: {top}."
+    if flow >= 50:
+        return f"{symbol} is developing but not clean yet; wait for stronger aggressor pressure and stable spread. Current watchlist: {top}."
+    return f"{symbol} orderflow is not supportive; keep it on observation only and focus on stronger flow names: {top}."
+
+
+def openai_api_key() -> str:
+    if os.getenv("OPENAI_API_KEY"):
+        return str(os.getenv("OPENAI_API_KEY"))
+    values = dotenv_values(".env")
+    return str(values.get("OPENAI_API_KEY") or "")
 
 
 def enrich_orderflow_table(tape: pd.DataFrame) -> pd.DataFrame:
@@ -1523,21 +1656,23 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
     with st.form("create_bot"):
         c1, c2, c3, c4 = st.columns(4)
         name = c1.text_input("Bot instance name", value=f"{symbols[0].replace('/', '')} bot" if symbols else "Crypto bot")
-        strategy = c2.selectbox("Strategy", available)
+        primary_strategy = c2.selectbox("Primary strategy", available)
         symbol = c3.selectbox("Symbol", symbols)
         capital = c4.number_input("Capital", min_value=0.0, value=250.0, step=50.0)
+        selected_strategies = st.multiselect("Strategy collection", available, default=[primary_strategy], help="Bots may carry multiple reusable strategy modules; the primary strategy is used for validation until portfolio execution is expanded.")
         p1, p2 = st.columns(2)
         min_confidence = p1.slider("Min confidence", min_value=0, max_value=100, value=55)
         risk_reward = p2.number_input("Risk reward", min_value=0.1, value=1.7, step=0.1)
         if st.form_submit_button("Create bot instance"):
             bots = load_bot_instances()
+            strategy_collection = selected_strategies or [primary_strategy]
             row = {
                 "name": name,
-                "strategy": strategy,
+                "strategy": primary_strategy,
                 "symbol": symbol,
                 "timeframe": "1h",
                 "capital": capital,
-                "parameters": {"min_confidence": min_confidence, "risk_reward": risk_reward},
+                "parameters": {"strategies": strategy_collection, "min_confidence": min_confidence, "risk_reward": risk_reward},
                 "state": "DRAFT",
                 "status_reason": "created from UI",
                 "created_at": datetime.now(UTC).isoformat(),
@@ -1550,63 +1685,15 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
 
     bots = load_bot_instances()
     if not bots.empty:
+        display = bots.copy()
+        display["strategy_collection"] = display["parameters"].apply(lambda value: ", ".join((value or {}).get("strategies", [])) if isinstance(value, dict) else "")
         with st.expander("Configured Bot Definitions", expanded=True):
             st.dataframe(
-                bots[[col for col in ["name", "strategy", "symbol", "timeframe", "capital", "state", "status_reason"] if col in bots]],
+                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state", "status_reason"] if col in display]],
                 use_container_width=True,
                 hide_index=True,
             )
-
-    active_names = tuple(sorted(set(bots["strategy"].astype(str).tolist()))) if not bots.empty and "strategy" in bots else tuple(load_deployed_strategy_names())
-    matrix, aggregate = load_strategy_matrix(active_names)
-    if not aggregate.empty:
-        strategy_tiles(aggregate)
-        with st.expander("Symbol by strategy backtest", expanded=False):
-            st.dataframe(
-                matrix[
-                    [
-                        "strategy",
-                        "symbol",
-                        "scan_bucket",
-                        "trades",
-                        "win_rate",
-                        "total_pnl",
-                        "total_return_pct",
-                        "profit_factor",
-                        "max_drawdown_pct",
-                        "confidence_score",
-                    ]
-                ],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "total_pnl": st.column_config.NumberColumn("PnL", format="$%.2f"),
-                    "total_return_pct": st.column_config.NumberColumn("Return", format="%.2f%%"),
-                    "win_rate": st.column_config.NumberColumn("Win", format="%.1f%%"),
-                    "max_drawdown_pct": st.column_config.NumberColumn("Max DD", format="%.2f%%"),
-                    "confidence_score": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f%%"),
-                },
-            )
-    else:
-        st.warning("No one-year Binance feature files found for the selected strategies.")
-
-    if not aggregate.empty:
-        fig = make_subplots(rows=1, cols=2, specs=[[{"type": "bar"}, {"type": "scatter"}]], subplot_titles=("One-Year PnL", "Return vs Drawdown"))
-        fig.add_trace(go.Bar(x=aggregate["strategy"], y=aggregate["total_pnl"], marker_color="#55d49a", name="PnL"), row=1, col=1)
-        fig.add_trace(
-            go.Scatter(
-                x=aggregate["max_drawdown_pct"],
-                y=aggregate["avg_return_pct"],
-                mode="markers+text",
-                text=aggregate["strategy"],
-                textposition="top center",
-                marker={"size": np.clip(aggregate["trades"] / 8, 10, 42), "color": aggregate["confidence_score"], "colorscale": "Viridis"},
-                name="Quality",
-            ),
-            row=1,
-            col=2,
-        )
-        st.plotly_chart(layout_chart(fig, 440), use_container_width=True)
+    st.info("Use Validation Lab to backtest configured bot instances over a selected period. Use Bot Runtime to deploy, stop, and monitor 24x7 bot instances.")
 
 
 def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
@@ -1875,6 +1962,15 @@ def journal_charts(trades: pd.DataFrame) -> None:
 def validation_screen() -> None:
     bots = load_bot_instances()
     bot_names = bots["name"].astype(str).tolist() if not bots.empty else []
+    if not bots.empty:
+        with st.expander("Bots available for backtest", expanded=True):
+            display = bots.copy()
+            display["strategy_collection"] = display["parameters"].apply(lambda value: ", ".join((value or {}).get("strategies", [])) if isinstance(value, dict) else "")
+            st.dataframe(
+                display[[col for col in ["name", "strategy_collection", "strategy", "symbol", "timeframe", "capital", "state"] if col in display]],
+                use_container_width=True,
+                hide_index=True,
+            )
     selected_bot = st.selectbox("Bot instance", bot_names or ["No bot instances"])
     c1, c2, c3, c4 = st.columns(4)
     symbol = c1.selectbox("Symbol", load_live_scan()["symbol"].astype(str).tolist() or available_live_symbols())
@@ -1886,6 +1982,8 @@ def validation_screen() -> None:
     end_date = d2.date_input("End date", value=datetime.now().date())
     slippage = d3.number_input("Slippage bps", min_value=0.0, value=5.0, step=1.0)
     if st.button("Run validation", use_container_width=True) and selected_bot != "No bot instances":
+        selected_row = bots[bots["name"].astype(str) == selected_bot].iloc[0]
+        metrics_result, trades = run_bot_validation(selected_row, symbol, timeframe, start_date, end_date, capital, fees, slippage)
         run_id = f"validation-{selected_bot}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
         validation_row = {
             "run_id": run_id,
@@ -1898,22 +1996,22 @@ def validation_screen() -> None:
             "fees_bps": fees,
             "slippage_bps": slippage,
             "state": "COMPLETED",
-            "metrics": {"capital": capital, "fees_bps": fees, "slippage_bps": slippage},
+            "metrics": metrics_result,
         }
         save_validation_run(validation_row)
         append_journal(selected_bot, symbol, "VALIDATION_RUN", "INFO", "COMPLETED", "validation/backtest completed", validation_row["metrics"])
-    active_strategies = tuple(sorted(set(bots["strategy"].astype(str).tolist()))) if not bots.empty and "strategy" in bots else tuple(load_deployed_strategy_names())
-    _, aggregate = load_strategy_matrix(active_strategies)
-    if aggregate.empty:
+        show_validation_result(metrics_result, trades)
+    runs = load_validation_runs_frame()
+    if runs.empty:
         metrics = CertificationMetrics(sharpe=0.0, profit_factor=0.0, max_drawdown_pct=99.0, replay_determinism=100, risk_violations=0)
     else:
-        best = aggregate.sort_values("total_pnl", ascending=False).iloc[0]
+        best = runs.iloc[0]
         metrics = CertificationMetrics(
-            sharpe=float(best["sharpe_proxy"]),
-            profit_factor=max(0.0, float(best["avg_return_pct"])),
-            max_drawdown_pct=float(best["max_drawdown_pct"]),
+            sharpe=float(best.get("sharpe_proxy", 0.0) or 0.0),
+            profit_factor=float(best.get("profit_factor", 0.0) or 0.0),
+            max_drawdown_pct=float(best.get("max_drawdown_pct", 99.0) or 99.0),
             replay_determinism=100,
-            risk_violations=0,
+            risk_violations=int(best.get("risk_rule_blocked_trades", 0) or 0),
         )
     report = CertificationEngine().certify(metrics)
     state_class = "good" if report.state == CertificationState.CERTIFIED else "warn" if report.state == CertificationState.CONDITIONAL else "bad"
@@ -1927,11 +2025,87 @@ def validation_screen() -> None:
     if report.reasons:
         st.error("Rejected / conditional reasons: " + "; ".join(report.reasons))
     st.info(validation_remediation(metrics, report.reasons))
-    st.dataframe(aggregate, use_container_width=True, hide_index=True)
-    runs = load_validation_runs_frame()
     if not runs.empty:
         st.markdown("### Previous Validation Runs")
         st.dataframe(runs, use_container_width=True, hide_index=True)
+
+
+def run_bot_validation(bot: pd.Series, symbol: str, timeframe: str, start_date: object, end_date: object, capital: float, fees_bps: float, slippage_bps: float) -> tuple[dict[str, object], pd.DataFrame]:
+    strategy_name = str(bot.get("strategy", ""))
+    strategy = STRATEGY_REGISTRY.get(strategy_name)
+    if strategy is None:
+        return {"error": f"strategy {strategy_name} is not registered", "total_trades": 0, "risk_rule_blocked_trades": 1}, pd.DataFrame()
+    feature_files = available_feature_files()
+    path = feature_files.get(symbol)
+    if path is None or not path.exists():
+        return {"error": f"no feature file found for {symbol}", "total_trades": 0, "risk_rule_blocked_trades": 1}, pd.DataFrame()
+    features = load_feature_file(path)
+    if "open_time" in features:
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        features = features[(features["open_time"] >= start_ts) & (features["open_time"] < end_ts)]
+    if len(features) < 210:
+        return {"error": "selected period has insufficient candles for indicator warmup", "total_trades": 0, "risk_rule_blocked_trades": 1}, pd.DataFrame()
+    bot_runner = StrategyAgnosticBot(BotDeployment(name=str(bot["name"]), strategy=strategy, interval=timeframe, notional=capital))
+    metrics, trades = bot_runner.replay(features)
+    trades_frame = pd.DataFrame([asdict(trade) for trade in trades])
+    fee_drag = sum(abs(float(trade.pnl)) for trade in trades) * (fees_bps / 10_000)
+    slippage_drag = len(trades) * capital * (slippage_bps / 10_000)
+    net_pnl = float(metrics.total_pnl) - fee_drag - slippage_drag
+    returns = trades_frame["return_pct"] if not trades_frame.empty and "return_pct" in trades_frame else pd.Series(dtype="float64")
+    consecutive_losses = max_consecutive_losses(trades_frame)
+    result = {
+        "strategy": strategy_name,
+        "strategy_collection": ", ".join((bot.get("parameters") or {}).get("strategies", [strategy_name])) if isinstance(bot.get("parameters"), dict) else strategy_name,
+        "total_trades": int(metrics.trades),
+        "win_rate": float(metrics.win_rate),
+        "profit_factor": finite_float(metrics.profit_factor),
+        "net_pnl": round(net_pnl, 2),
+        "max_drawdown_pct": float(metrics.max_drawdown_pct),
+        "average_r": float(metrics.avg_trade_return_pct),
+        "expectancy": float(returns.mean()) if not returns.empty else 0.0,
+        "sharpe_proxy": float(metrics.sharpe_proxy),
+        "consecutive_losses": int(consecutive_losses),
+        "average_holding_time": float(trades_frame["bars_held"].mean()) if not trades_frame.empty and "bars_held" in trades_frame else 0.0,
+        "best_trade": float(trades_frame["pnl"].max()) if not trades_frame.empty and "pnl" in trades_frame else 0.0,
+        "worst_trade": float(trades_frame["pnl"].min()) if not trades_frame.empty and "pnl" in trades_frame else 0.0,
+        "rejected_trades": 0,
+        "risk_rule_blocked_trades": 0,
+        "fees_bps": fees_bps,
+        "slippage_bps": slippage_bps,
+    }
+    return result, trades_frame
+
+
+def finite_float(value: float) -> float:
+    return float(value) if np.isfinite(value) else 999.0
+
+
+def show_validation_result(metrics: dict[str, object], trades: pd.DataFrame) -> None:
+    st.markdown("### Validation Result")
+    cols = st.columns(5)
+    cols[0].metric("Trades", f"{int(metrics.get('total_trades', 0))}")
+    cols[1].metric("Win Rate", f"{float(metrics.get('win_rate', 0.0)):.1f}%")
+    cols[2].metric("Profit Factor", f"{float(metrics.get('profit_factor', 0.0)):.2f}")
+    cols[3].metric("Net PnL", f"${float(metrics.get('net_pnl', 0.0)):,.2f}")
+    cols[4].metric("Max DD", f"{float(metrics.get('max_drawdown_pct', 0.0)):.1f}%")
+    if not trades.empty:
+        journal_charts(trades.assign(exit_time=pd.to_datetime(trades["exit_time"], errors="coerce")))
+        st.dataframe(enrich_trade_journal(trades), use_container_width=True, hide_index=True)
+
+
+def max_consecutive_losses(trades: pd.DataFrame) -> int:
+    if trades.empty or "pnl" not in trades:
+        return 0
+    current = 0
+    worst = 0
+    for pnl in trades["pnl"]:
+        if float(pnl) <= 0:
+            current += 1
+            worst = max(worst, current)
+        else:
+            current = 0
+    return worst
 
 
 def validation_remediation(metrics: CertificationMetrics, reasons: list[str]) -> str:
@@ -1954,6 +2128,7 @@ with st.sidebar:
     page = st.radio(
         "Screen",
         [
+            "DASHBOARD",
             "LIVE TRADING",
             "ORDERFLOW",
             "RISK",
@@ -1982,8 +2157,10 @@ assert isinstance(summary, dict)
 
 st.markdown("# mytradingmind.ai Ops Console")
 st.markdown("<div class='subtle'>Binance Spot Testnet live scan with one-year Binance candle backtest and strategy performance tiles.</div>", unsafe_allow_html=True)
-portfolio_performance_overview(load_live_scan(), load_bot_instances())
-status_row(summary)
+if page == "DASHBOARD":
+    dashboard_screen(summary)
+else:
+    status_row(summary)
 
 if page == "LIVE TRADING":
     live_trading(data)
