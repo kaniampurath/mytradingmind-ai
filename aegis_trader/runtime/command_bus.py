@@ -53,7 +53,7 @@ class RuntimeCommandBus:
         action = command.action.upper()
         if action not in self.VALID_ACTIONS:
             return RuntimeCommandResult(command.command_id, action, False, f"unsupported action: {action}")
-        if action.endswith("_BOT") and not command.bot_id:
+        if (action.endswith("_BOT") or action in {"RUN_VALIDATION", "SWITCH_MODE", "FLATTEN_POSITION"}) and not command.bot_id:
             return RuntimeCommandResult(command.command_id, action, False, "bot_id is required")
         try:
             state = self._execute(action, command)
@@ -79,5 +79,10 @@ class RuntimeCommandBus:
         if action == "RESUME_BOT":
             return self.manager.resume_bot(command.bot_id, command.source)
         if action in {"RUN_VALIDATION", "SWITCH_MODE", "FLATTEN_POSITION"}:
+            if not self._bot_exists(command.bot_id):
+                raise KeyError(f"Unknown bot: {command.bot_id}")
             return {"accepted": True, "action": action, "bot_id": command.bot_id}
         raise ValueError(f"unsupported action: {action}")
+
+    def _bot_exists(self, bot_id: str) -> bool:
+        return any(row.get("bot_id") == bot_id or row.get("name") == bot_id for row in self.manager.list_bot_states())

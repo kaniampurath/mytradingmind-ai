@@ -35,3 +35,9 @@ def test_command_bus_rejects_unknown_action() -> None:
     result = RuntimeCommandBus().dispatch(RuntimeCommand("MAKE_ORDER"))
     assert not result.ok
     assert "unsupported" in result.message
+
+
+def test_command_bus_fails_closed_for_unknown_flatten_bot() -> None:
+    result = RuntimeCommandBus().dispatch(RuntimeCommand("FLATTEN_POSITION", bot_id="missing-bot"))
+    assert not result.ok
+    assert "Unknown bot" in result.message
