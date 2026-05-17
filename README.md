@@ -71,6 +71,13 @@ Generate replay metrics into reports and MariaDB:
 python scripts\generate_top10_metrics.py --database
 ```
 
+Run institutional readiness and deterministic stress checks:
+
+```powershell
+python scripts\institutional_check.py --run-tests
+python scripts\production_readiness_stress.py
+```
+
 Run the Binance websocket stream used by the Live Trading screen:
 
 ```powershell
@@ -96,6 +103,8 @@ Use the deployment guide:
 Short version:
 
 ```bash
+chmod +x setup.sh
+./setup.sh
 cp deploy/ubuntu.env.example .env
 nano .env
 mkdir -p data reports logs backups

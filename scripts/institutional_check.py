@@ -13,6 +13,8 @@ from aegis_trader.storage.models import Base
 
 REQUIRED_FILES = [
     "README.md",
+    "requirements.txt",
+    "setup.sh",
     "pyproject.toml",
     "deploy/Dockerfile",
     "deploy/docker-compose.yml",
@@ -21,6 +23,7 @@ REQUIRED_FILES = [
     "docs/INSTITUTIONAL_READINESS.md",
     "scripts/start_dashboard.py",
     "scripts/init_db.py",
+    "scripts/production_readiness_stress.py",
 ]
 
 

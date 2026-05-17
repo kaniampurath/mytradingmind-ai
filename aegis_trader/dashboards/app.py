@@ -50,6 +50,13 @@ def setting_bool(name: str, default: bool = False) -> bool:
     return bool(getattr(settings, name, default))
 
 
+def utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def setting_int(name: str, default: int) -> int:
     return int(getattr(settings, name, default))
 
@@ -556,7 +563,7 @@ def live_stream_heartbeat(stream: dict[str, object]) -> dict[str, str]:
     age_text = "not started"
     if updated_at:
         try:
-            generated = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            generated = utc_datetime(str(updated_at))
             age_seconds = max(0, int((datetime.now(UTC) - generated).total_seconds()))
             age_text = f"{age_seconds}s ago" if age_seconds < 60 else f"{age_seconds // 60}m {age_seconds % 60}s ago"
         except ValueError:
@@ -1135,7 +1142,7 @@ def status_row(summary: dict[str, float | str]) -> None:
     age_text = "not started"
     if generated_at:
         try:
-            generated = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+            generated = utc_datetime(str(generated_at))
             age_seconds = max(0, int((datetime.now(UTC) - generated).total_seconds()))
             age_text = f"{age_seconds // 60}m {age_seconds % 60}s ago"
         except ValueError:
@@ -1144,11 +1151,11 @@ def status_row(summary: dict[str, float | str]) -> None:
         f"""
         <div class="status-row">
           <div class="status-card"><div class="status-label">Mode</div><div class="status-value info">{summary["mode"]}</div></div>
-          <div class="status-card"><div class="status-label">Symbol</div><div class="status-value">{summary["symbol"]}</div></div>
           <div class="status-card"><div class="status-label">Feed</div><div class="status-value good">{summary["feed"]}</div></div>
+          <div class="status-card"><div class="status-label">Connectivity</div><div class="status-value good">{stream_status["status"]}</div></div>
           <div class="status-card"><div class="status-label">Risk</div><div class="status-value good">{summary["risk"]}</div></div>
           <div class="status-card"><div class="status-label">Protection</div><div class="status-value warn">{summary["kill"]}</div></div>
-          <div class="status-card"><div class="status-label">Live Stream</div><div class="status-value good">{stream_status["status"]}</div></div>
+          <div class="status-card"><div class="status-label">Session</div><div class="status-value info">TESTNET</div></div>
         </div>
         <div class="heartbeat">
           <span class="pill">socket: {stream_status["source"]}</span>
@@ -1161,6 +1168,33 @@ def status_row(summary: dict[str, float | str]) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def portfolio_performance_overview(scan: pd.DataFrame, bots: pd.DataFrame) -> None:
+    scan = normalize_scan_columns(scan) if not scan.empty else scan
+    running = bots[bots["state"].isin(["DEPLOYED", "RUNNING"])] if not bots.empty and "state" in bots else pd.DataFrame()
+    cumulative_pnl = float(scan["total_pnl"].sum()) if not scan.empty and "total_pnl" in scan else 0.0
+    unrealized = float(scan["active_pnl"].fillna(0).sum()) if not scan.empty and "active_pnl" in scan else 0.0
+    realized = cumulative_pnl - unrealized
+    avg_win_rate = float(scan["win_rate"].mean()) if not scan.empty and "win_rate" in scan else 0.0
+    avg_pf = float(scan["profit_factor"].replace([np.inf, -np.inf], np.nan).fillna(0).mean()) if not scan.empty and "profit_factor" in scan else 0.0
+    exposure = float(running["capital"].sum()) if not running.empty and "capital" in running else 0.0
+    active_risk = min(100.0, exposure / max(float(load_risk_settings().get("max_portfolio_exposure", 1.0)), 1.0) * 100)
+    drawdown = float(scan["total_pnl"].min()) if not scan.empty and "total_pnl" in scan else 0.0
+    st.markdown("### Global Performance Overview")
+    a, b, c, d, e, f = st.columns(6)
+    a.metric("Cumulative PnL", f"${cumulative_pnl:,.2f}")
+    b.metric("Realized PnL", f"${realized:,.2f}")
+    c.metric("Unrealized PnL", f"${unrealized:,.2f}")
+    d.metric("Profit Factor", f"{avg_pf:.2f}")
+    e.metric("Win Rate", f"{avg_win_rate:.1f}%")
+    f.metric("Active Risk", f"{active_risk:.1f}%")
+    if not scan.empty:
+        ranked = scan.sort_values("total_pnl", ascending=False).head(10)
+        fig = make_subplots(rows=1, cols=2, specs=[[{"type": "bar"}, {"type": "scatter"}]], subplot_titles=("Strategy Universe PnL", "Signal Quality"))
+        fig.add_trace(go.Bar(x=ranked["symbol"], y=ranked["total_pnl"], marker_color=np.where(ranked["total_pnl"] >= 0, "#55d49a", "#ff6f7d"), name="PnL"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=ranked["confidence_score"], y=ranked["orderflow_score"], mode="markers+text", text=ranked["symbol"], marker={"size": 12, "color": ranked["buy_score"], "colorscale": "Viridis"}, name="Quality"), row=1, col=2)
+        st.plotly_chart(layout_chart(fig, 300), use_container_width=True)
 
 
 def price_panel(candles: pd.DataFrame) -> go.Figure:
@@ -1237,21 +1271,23 @@ def risk_gauge(title: str, value: float, threshold: float, suffix: str = "%") ->
 
 
 def live_trading(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
-    candles = data["candles"]
     summary = data["summary"]
-    assert isinstance(candles, pd.DataFrame)
     assert isinstance(summary, dict)
     scan = load_live_scan()
     if not scan.empty:
         live_price_socket_component(scan)
         st.caption("Only the price ticker above updates live in the browser. Bot, bucket, and score tables stay steady to avoid screen flicker.")
-        st.markdown("### Running Bot Instances")
-        bot_instance_tiles(load_bot_instances())
         st.markdown("### Market Buckets")
         bucket_board(scan)
-    chart_symbol = str(summary.get("symbol", "selected crypto"))
-    with st.expander(f"{chart_symbol} reference chart", expanded=False):
-        st.plotly_chart(price_panel(candles), use_container_width=True)
+    feature_files = available_feature_files()
+    chart_symbols = list(feature_files)
+    if chart_symbols:
+        selected_chart_symbol = st.selectbox("Chart symbol", chart_symbols, index=0, key="live_chart_symbol")
+        chart_data = binance_history_snapshot(str(feature_files[selected_chart_symbol]))
+        chart_candles = chart_data["candles"]
+        assert isinstance(chart_candles, pd.DataFrame)
+        with st.expander("Market chart", expanded=False):
+            st.plotly_chart(price_panel(chart_candles), use_container_width=True)
 
 
 def bucket_board(scan: pd.DataFrame) -> None:
@@ -1271,6 +1307,9 @@ def bucket_board(scan: pd.DataFrame) -> None:
         if rows.empty:
             html.append("<div class='scan-meta'>No symbols in this state.</div>")
         for _, row in rows.head(5).iterrows():
+            sentiment = "constructive" if float(row["buy_score"]) >= 65 else "neutral" if float(row["watch_score"]) >= 45 else "quiet"
+            vol = "high vol" if float(row.get("stream_spread_bps", 0.0)) > 12 else "stable vol"
+            trend = "trend improving" if float(row["buy_score"]) > float(row["sell_score"]) else "trend soft"
             pnl = ""
             if bucket == "IN TRADE" and pd.notna(row.get("active_pnl")):
                 pnl_class = "good" if float(row["active_pnl"]) >= 0 else "bad"
@@ -1288,6 +1327,7 @@ def bucket_board(scan: pd.DataFrame) -> None:
                 "<div class='scan-card'>"
                 f"<div class='scan-symbol'>{row['symbol']} <span class='pill'>${float(row['last_close']):,.4f}</span></div>"
                 f"<div class='scan-meta'>{row['scan_reason']}</div>"
+                f"<div class='scan-meta'><span class='pill'>{sentiment}</span> <span class='pill'>{vol}</span> <span class='pill'>{trend}</span></div>"
                 f"<div class='scan-meta'>watch {float(row['watch_score']):.0f}% | buy {float(row['buy_score']):.0f}% | flow {float(row['orderflow_score']):.0f}% | conf {float(row['confidence_score']):.0f}%</div>"
                 f"<div class='scan-meta'>{stream_line}</div>"
                 f"{pnl}"
@@ -1342,7 +1382,7 @@ def stream_age_text(value: object) -> str:
     if not value:
         return "stream pending"
     try:
-        updated = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        updated = utc_datetime(str(value))
     except ValueError:
         return "stream seen"
     age_seconds = max(0, int((datetime.now(UTC) - updated).total_seconds()))
@@ -1379,12 +1419,13 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
         e.metric("Volume Imbalance", f"{taker_buy:.0f}% taker buy")
         f.metric("Book Imbalance", f"{depth:+.2f}")
         g.metric("Delta / Flow", f"{orderflow_score:.0f}%")
+        st.markdown(orderflow_insight(selected_row), unsafe_allow_html=True)
         st.caption(str(selected_row.get("orderflow_reason", "awaiting selected coin orderflow")))
     left, right = st.columns([1.45, 1])
     left.plotly_chart(orderflow_panel(candles, tape), use_container_width=True)
     right.plotly_chart(depth_panel(book), use_container_width=True)
     st.dataframe(
-        tape.sort_values("age_ms").head(16),
+        enrich_orderflow_table(tape.sort_values("age_ms").head(16)),
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -1392,6 +1433,35 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
             "spread_bps": st.column_config.NumberColumn("spread bps", format="%.2f"),
         },
     )
+
+
+def orderflow_insight(row: pd.Series) -> str:
+    buy = float(row.get("buy_score", 0.0))
+    sell = float(row.get("sell_score", 0.0))
+    spread = float(row.get("stream_spread_bps", 0.0))
+    depth = float(row.get("stream_depth_imbalance", 0.0))
+    taker = float(row.get("stream_taker_buy_ratio", 0.0))
+    bias = "bullish" if buy > sell + 12 else "defensive" if sell > buy + 12 else "balanced"
+    liquidity = "liquidity stable" if spread <= 8 else "liquidity thinning"
+    aggressor = "buyers lifting offers" if taker >= 0.56 else "sellers pressing bids" if taker <= 0.44 else "two-way tape"
+    absorption = "bid absorption visible" if depth > 0.15 else "ask-side resistance visible" if depth < -0.15 else "no strong absorption edge"
+    return (
+        "<div class='buy-alert'>"
+        f"<b>Orderflow insight:</b> {bias.title()} bias. {liquidity.title()}. "
+        f"{aggressor.title()}. {absorption.title()}."
+        "</div>"
+    )
+
+
+def enrich_orderflow_table(tape: pd.DataFrame) -> pd.DataFrame:
+    view = tape.copy()
+    view["implication"] = np.where(
+        (view["side"] == "BUY") & (view["delta"] > 0),
+        "buyers active",
+        np.where((view["side"] == "SELL") & (view["delta"] < 0), "sellers active", "mixed flow"),
+    )
+    view["liquidity_hint"] = np.where(view["spread_bps"] <= 6, "tight spread", np.where(view["spread_bps"] <= 12, "watch spread", "wide spread"))
+    return view
 
 
 def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
@@ -1447,7 +1517,7 @@ def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
 
 def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Bot Framework")
-    st.caption("The bot framework is strategy-agnostic. Attach strategies here; execution, replay, reporting, and deployment state remain outside the strategy.")
+    st.caption("Create and configure bots here. Runtime monitoring lives in Bot Runtime.")
     available = list(STRATEGY_REGISTRY)
     symbols = load_live_scan()["symbol"].astype(str).tolist() or available_live_symbols()
     with st.form("create_bot"):
@@ -1479,25 +1549,13 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
             st.success("Bot instance created.")
 
     bots = load_bot_instances()
-    bot_instance_tiles(bots)
     if not bots.empty:
-        for _, bot in bots.iterrows():
-            with st.expander(f"{bot['name']} controls", expanded=False):
-                c1, c2, c3 = st.columns(3)
-                if c1.button("Backtest", key=f"bt-{bot['name']}", use_container_width=True):
-                    transition_bot(str(bot["name"]), "BACKTESTED", "one-year Binance backtest completed")
-                if c2.button("Deploy", key=f"dep-{bot['name']}", use_container_width=True):
-                    ok, reason = risk_gate_for_bot(bot, load_risk_settings())
-                    if ok:
-                        transition_bot(str(bot["name"]), "RUNNING", "deployed and running 24x7")
-                        st.success(reason)
-                    else:
-                        transition_bot(str(bot["name"]), "FAILED", f"risk rejection: {reason}")
-                        append_journal(str(bot["name"]), str(bot["symbol"]), "RISK_REJECTION", "WARN", "BLOCKED", reason)
-                        st.error(reason)
-                if c3.button("Stop", key=f"stop-{bot['name']}", use_container_width=True):
-                    transition_bot(str(bot["name"]), "STOPPED", "stopped by user")
-                    st.warning("Bot stopped.")
+        with st.expander("Configured Bot Definitions", expanded=True):
+            st.dataframe(
+                bots[[col for col in ["name", "strategy", "symbol", "timeframe", "capital", "state", "status_reason"] if col in bots]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
     active_names = tuple(sorted(set(bots["strategy"].astype(str).tolist()))) if not bots.empty and "strategy" in bots else tuple(load_deployed_strategy_names())
     matrix, aggregate = load_strategy_matrix(active_names)
@@ -1549,6 +1607,72 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
             col=2,
         )
         st.plotly_chart(layout_chart(fig, 440), use_container_width=True)
+
+
+def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
+    st.markdown("### Bot Runtime")
+    st.caption("Live operational monitoring for deployed bot instances. Creation and strategy configuration remain in Bot Framework.")
+    bots = load_bot_instances()
+    scan = load_live_scan()
+    if bots.empty:
+        st.info("No bot instances exist yet. Create one in Bot Framework.")
+        return
+    active_names = tuple(sorted(set(bots["strategy"].astype(str).tolist()))) if "strategy" in bots else tuple(load_deployed_strategy_names())
+    matrix, aggregate = load_strategy_matrix(active_names)
+    runtime_tiles(bots, scan, matrix, aggregate)
+    st.markdown("### Runtime Controls")
+    for _, bot in bots.iterrows():
+        with st.expander(f"{bot['name']} controls", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            if c1.button("Backtest", key=f"rt-bt-{bot['name']}", use_container_width=True):
+                transition_bot(str(bot["name"]), "BACKTESTED", "one-year Binance backtest completed")
+                st.success("Backtest state updated.")
+            if c2.button("Deploy", key=f"rt-dep-{bot['name']}", use_container_width=True):
+                ok, reason = risk_gate_for_bot(bot, load_risk_settings())
+                if ok:
+                    transition_bot(str(bot["name"]), "RUNNING", "deployed and running 24x7")
+                    st.success(reason)
+                else:
+                    transition_bot(str(bot["name"]), "FAILED", f"risk rejection: {reason}")
+                    append_journal(str(bot["name"]), str(bot["symbol"]), "RISK_REJECTION", "WARN", "BLOCKED", reason)
+                    st.error(reason)
+            if c3.button("Stop", key=f"rt-stop-{bot['name']}", use_container_width=True):
+                transition_bot(str(bot["name"]), "STOPPED", "stopped by user")
+                st.warning("Bot stopped.")
+
+
+def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, aggregate: pd.DataFrame) -> None:
+    scan = normalize_scan_columns(scan) if not scan.empty else scan
+    html = ["<div class='bucket-grid'>"]
+    for _, row in bots.iterrows():
+        state = str(row.get("state", "DRAFT"))
+        symbol = str(row.get("symbol", ""))
+        strategy = str(row.get("strategy", ""))
+        state_class = "good" if state in {"RUNNING", "DEPLOYED"} else "bad" if state == "FAILED" else "warn" if state in {"PAUSED", "BACKTESTED"} else "info"
+        scan_row = scan[scan["symbol"].astype(str) == symbol].iloc[0] if not scan.empty and symbol in set(scan["symbol"].astype(str)) else pd.Series(dtype=object)
+        perf = matrix[(matrix["strategy"].astype(str) == strategy) & (matrix["symbol"].astype(str) == symbol)] if not matrix.empty else pd.DataFrame()
+        perf_row = perf.iloc[0] if not perf.empty else pd.Series(dtype=object)
+        pnl = float(scan_row.get("active_pnl", 0.0) or 0.0)
+        drawdown = float(perf_row.get("max_drawdown_pct", 0.0) or 0.0)
+        win_rate = float(perf_row.get("win_rate", 0.0) or 0.0)
+        pf = float(perf_row.get("profit_factor", 0.0) or 0.0)
+        sharpe = float(perf_row.get("sharpe_proxy", 0.0) or 0.0)
+        expectancy = float(perf_row.get("avg_trade_return_pct", 0.0) or 0.0)
+        health = "healthy" if state in {"RUNNING", "DEPLOYED"} and drawdown < 12 else "watch" if state != "FAILED" else "failed"
+        pnl_class = "good" if pnl >= 0 else "bad"
+        html.append(
+            "<div class='bucket'>"
+            f"<div class='bucket-title'><span>{row['name']}</span><span class='pill {state_class}'>{state}</span></div>"
+            f"<div class='scan-meta'>{strategy} | {symbol}</div>"
+            f"<div class='status-value {pnl_class}'>${pnl:,.2f}</div>"
+            f"<div class='scan-meta'>health {health} | risk {row.get('status_reason', '')}</div>"
+            f"<div class='scan-meta'>DD {drawdown:.2f}% | win {win_rate:.1f}% | PF {pf:.2f}</div>"
+            f"<div class='scan-meta'>Sharpe {sharpe:.2f} | expectancy {expectancy:.3f}% | uptime {stream_age_text(row.get('deployed_at', row.get('created_at', '')))}</div>"
+            f"<div class='scan-meta'>positions {1 if state in {'RUNNING', 'DEPLOYED'} else 0} | heartbeat {stream_age_text(row.get('heartbeat_at', ''))}</div>"
+            "</div>"
+        )
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 def bot_instance_tiles(bots: pd.DataFrame) -> None:
@@ -1674,17 +1798,78 @@ def health_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> Non
     )
     st.plotly_chart(layout_chart(fig, 300), use_container_width=True)
     st.dataframe(health, use_container_width=True, hide_index=True)
+    st.markdown("### Critical Log Updates")
+    critical = critical_log_events(journal)
+    if critical.empty:
+        st.info("No critical operational events in the current journal window.")
+    else:
+        st.dataframe(critical, use_container_width=True, hide_index=True)
+
+
+def critical_log_events(journal: pd.DataFrame) -> pd.DataFrame:
+    if journal.empty:
+        return pd.DataFrame()
+    text = journal.astype(str).agg(" ".join, axis=1)
+    mask = journal.get("severity", pd.Series("", index=journal.index)).astype(str).isin(["WARN", "ERROR", "CRITICAL"]) | text.str.contains(
+        "kill|stale|reconnect|desync|reconciliation|fallback|failed|retry",
+        case=False,
+        na=False,
+    )
+    cols = [col for col in ["event_time", "bot_name", "symbol", "event_type", "severity", "decision", "reason"] if col in journal]
+    return journal.loc[mask, cols].head(80)
 
 
 def journal_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     journal = load_journal_events()
+    trades = load_backtest_trades()
+    if not trades.empty:
+        journal_charts(trades)
+        with st.expander("Historical Trade Journal", expanded=True):
+            st.dataframe(enrich_trade_journal(trades).tail(250), use_container_width=True, hide_index=True)
     if journal.empty:
-        st.info("Journal is ready. Bot decisions will appear here as bots are created, backtested, deployed, stopped, rejected by risk, or validated.")
+        st.info("Live journal is ready. New bot decisions and testnet execution results will append here.")
         return
     journal["event_time"] = pd.to_datetime(journal["event_time"], errors="coerce")
     counts = journal.groupby("event_type").size().reset_index(name="events").sort_values("events", ascending=False)
-    st.plotly_chart(layout_chart(go.Figure(go.Bar(x=counts["event_type"], y=counts["events"], marker_color="#79a7ff")), 300), use_container_width=True)
+    st.plotly_chart(layout_chart(go.Figure(go.Bar(x=counts["event_type"], y=counts["events"], marker_color="#79a7ff")), 280), use_container_width=True)
     st.dataframe(journal.sort_values("event_time", ascending=False), use_container_width=True, hide_index=True)
+
+
+def load_backtest_trades() -> pd.DataFrame:
+    path = Path("reports/top10_replay_trades.csv")
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        trades = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+    if "exit_time" in trades:
+        trades["exit_time"] = pd.to_datetime(trades["exit_time"], errors="coerce")
+    return trades
+
+
+def enrich_trade_journal(trades: pd.DataFrame) -> pd.DataFrame:
+    view = trades.copy()
+    view["trade_reasoning"] = np.where(view.get("pnl", 0) >= 0, "target/positive exit behavior", "stop or adverse exit behavior")
+    view["regime"] = np.where(view.get("return_pct", 0) >= 0, "favorable", "hostile")
+    view["da_verdict"] = np.where(view.get("return_pct", 0) >= -1.5, "acceptable", "would review")
+    view["orderflow_snapshot"] = np.where(view.get("return_pct", 0) >= 0, "confirmation present", "flow degraded")
+    return view
+
+
+def journal_charts(trades: pd.DataFrame) -> None:
+    trades = trades.sort_values("exit_time").copy()
+    trades["equity"] = trades["pnl"].cumsum()
+    trades["peak"] = trades["equity"].cummax()
+    trades["drawdown"] = trades["equity"] - trades["peak"]
+    trades["month"] = trades["exit_time"].dt.to_period("M").astype(str)
+    monthly = trades.groupby("month", as_index=False)["pnl"].sum()
+    fig = make_subplots(rows=2, cols=2, subplot_titles=("Equity Curve", "PnL Distribution", "Drawdown", "Monthly Performance"))
+    fig.add_trace(go.Scatter(x=trades["exit_time"], y=trades["equity"], line={"color": "#55d49a"}, name="Equity"), row=1, col=1)
+    fig.add_trace(go.Histogram(x=trades["pnl"], marker_color="#79a7ff", name="PnL"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=trades["exit_time"], y=trades["drawdown"], fill="tozeroy", line={"color": "#ff6f7d"}, name="Drawdown"), row=2, col=1)
+    fig.add_trace(go.Bar(x=monthly["month"], y=monthly["pnl"], marker_color=np.where(monthly["pnl"] >= 0, "#55d49a", "#ff6f7d"), name="Monthly"), row=2, col=2)
+    st.plotly_chart(layout_chart(fig, 560), use_container_width=True)
 
 
 def validation_screen() -> None:
@@ -1739,6 +1924,9 @@ def validation_screen() -> None:
     c.metric("Max DD", f"{metrics.max_drawdown_pct:.1f}%")
     d.metric("Determinism", f"{metrics.replay_determinism:.0f}%")
     e.metric("Risk Violations", f"{metrics.risk_violations}")
+    if report.reasons:
+        st.error("Rejected / conditional reasons: " + "; ".join(report.reasons))
+    st.info(validation_remediation(metrics, report.reasons))
     st.dataframe(aggregate, use_container_width=True, hide_index=True)
     runs = load_validation_runs_frame()
     if not runs.empty:
@@ -1746,11 +1934,23 @@ def validation_screen() -> None:
         st.dataframe(runs, use_container_width=True, hide_index=True)
 
 
+def validation_remediation(metrics: CertificationMetrics, reasons: list[str]) -> str:
+    guidance = []
+    if metrics.max_drawdown_pct >= 12:
+        guidance.append("Reduce volatility exposure and tighten sizing during expansion regimes.")
+    if metrics.sharpe <= 1.2:
+        guidance.append("Raise confidence/orderflow thresholds or limit trading to stronger regimes.")
+    if metrics.profit_factor <= 1.3:
+        guidance.append("Review exits, spread filters, and stop distance to improve profit factor.")
+    if metrics.risk_violations:
+        guidance.append("Risk violations must be zero before deployment.")
+    return " ".join(guidance or ["Validation is acceptable for continued paper/testnet monitoring."])
+
+
 with st.sidebar:
     st.title("mytradingmind.ai")
     feature_files = available_feature_files()
     selectable_symbols = list(feature_files)
-    selected_market_symbol = st.selectbox("Market data symbol", selectable_symbols) if selectable_symbols else ""
     page = st.radio(
         "Screen",
         [
@@ -1758,13 +1958,15 @@ with st.sidebar:
             "ORDERFLOW",
             "RISK",
             "BOT FRAMEWORK",
+            "BOT RUNTIME",
             "SYSTEM HEALTH",
             "JOURNAL",
             "VALIDATION LAB",
         ],
     )
     st.divider()
-    data_file = feature_files.get(selected_market_symbol, Path("__missing_feature_file__"))
+    default_symbol = selectable_symbols[0] if selectable_symbols else ""
+    data_file = feature_files.get(default_symbol, Path("__missing_feature_file__"))
     st.caption("Live prices update inside the ticker only; the page itself does not auto-refresh.")
     st.caption("Mode: Binance Spot Testnet live scan with Binance one-year candle backtest.")
 
@@ -1780,6 +1982,7 @@ assert isinstance(summary, dict)
 
 st.markdown("# mytradingmind.ai Ops Console")
 st.markdown("<div class='subtle'>Binance Spot Testnet live scan with one-year Binance candle backtest and strategy performance tiles.</div>", unsafe_allow_html=True)
+portfolio_performance_overview(load_live_scan(), load_bot_instances())
 status_row(summary)
 
 if page == "LIVE TRADING":
@@ -1790,6 +1993,8 @@ elif page == "RISK":
     risk_screen(data)
 elif page == "BOT FRAMEWORK":
     bot_framework_screen(data)
+elif page == "BOT RUNTIME":
+    bot_runtime_screen(data)
 elif page == "SYSTEM HEALTH":
     health_screen(data)
 elif page == "JOURNAL":
