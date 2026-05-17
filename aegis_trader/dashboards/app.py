@@ -1909,6 +1909,7 @@ def critical_log_events(journal: pd.DataFrame) -> pd.DataFrame:
 def journal_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     journal = load_journal_events()
     trades = load_backtest_trades()
+    validation_runs = load_validation_runs_frame()
     if not trades.empty:
         journal_charts(trades)
         with st.expander("Historical Trade Journal", expanded=True):
@@ -1917,9 +1918,92 @@ def journal_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> No
         st.info("Live journal is ready. New bot decisions and testnet execution results will append here.")
         return
     journal["event_time"] = pd.to_datetime(journal["event_time"], errors="coerce")
+    correlation = correlate_backtest_journal(validation_runs, journal, trades)
+    if not correlation.empty:
+        st.markdown("### Backtest To Journal Correlation")
+        st.dataframe(correlation, use_container_width=True, hide_index=True)
+        st.markdown("### Improvement Suggestions")
+        for suggestion in journal_improvement_suggestions(correlation):
+            st.info(suggestion)
     counts = journal.groupby("event_type").size().reset_index(name="events").sort_values("events", ascending=False)
     st.plotly_chart(layout_chart(go.Figure(go.Bar(x=counts["event_type"], y=counts["events"], marker_color="#79a7ff")), 280), use_container_width=True)
     st.dataframe(journal.sort_values("event_time", ascending=False), use_container_width=True, hide_index=True)
+
+
+def correlate_backtest_journal(validation_runs: pd.DataFrame, journal: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
+    if validation_runs.empty:
+        return pd.DataFrame()
+    runs = validation_runs.copy()
+    journal_view = journal.copy() if not journal.empty else pd.DataFrame()
+    trades_view = trades.copy() if not trades.empty else pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    for _, run in runs.iterrows():
+        bot_name = str(run.get("bot_name", ""))
+        symbol = str(run.get("symbol", ""))
+        related_journal = journal_view[
+            (journal_view.get("bot_name", pd.Series(dtype=str)).astype(str) == bot_name)
+            & (journal_view.get("symbol", pd.Series(dtype=str)).astype(str).isin([symbol, ""]))
+        ] if not journal_view.empty else pd.DataFrame()
+        related_trades = trades_view[trades_view.get("symbol", pd.Series(dtype=str)).astype(str) == symbol] if not trades_view.empty else pd.DataFrame()
+        losing_trades = int((related_trades.get("pnl", pd.Series(dtype=float)) <= 0).sum()) if not related_trades.empty else 0
+        winning_trades = int((related_trades.get("pnl", pd.Series(dtype=float)) > 0).sum()) if not related_trades.empty else 0
+        risk_blocks = int(related_journal.get("event_type", pd.Series(dtype=str)).astype(str).str.contains("RISK_REJECTION|BLOCK", case=False, na=False).sum()) if not related_journal.empty else 0
+        validation_events = int((related_journal.get("event_type", pd.Series(dtype=str)).astype(str) == "VALIDATION_RUN").sum()) if not related_journal.empty else 0
+        rows.append(
+            {
+                "bot_name": bot_name,
+                "symbol": symbol,
+                "strategy": run.get("strategy", ""),
+                "validation_state": run.get("state", ""),
+                "net_pnl": float(run.get("net_pnl", 0.0) or 0.0),
+                "profit_factor": float(run.get("profit_factor", 0.0) or 0.0),
+                "win_rate": float(run.get("win_rate", 0.0) or 0.0),
+                "max_drawdown_pct": float(run.get("max_drawdown_pct", 0.0) or 0.0),
+                "consecutive_losses": int(run.get("consecutive_losses", 0) or 0),
+                "journal_events": int(len(related_journal)),
+                "validation_events": validation_events,
+                "risk_blocks": risk_blocks,
+                "backtest_wins": winning_trades,
+                "backtest_losses": losing_trades,
+                "suggestion": improvement_suggestion_for_row(run, risk_blocks, losing_trades),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["max_drawdown_pct", "net_pnl"], ascending=[False, True])
+
+
+def improvement_suggestion_for_row(row: pd.Series, risk_blocks: int, losing_trades: int) -> str:
+    suggestions: list[str] = []
+    if float(row.get("max_drawdown_pct", 0.0) or 0.0) >= 12:
+        suggestions.append("tighten sizing or pause this bot in expansion/panic regimes")
+    if float(row.get("profit_factor", 0.0) or 0.0) < 1.3:
+        suggestions.append("review exit logic, stop distance, and spread filter")
+    if float(row.get("win_rate", 0.0) or 0.0) < 40:
+        suggestions.append("raise entry confidence and orderflow confirmation thresholds")
+    if int(row.get("consecutive_losses", 0) or 0) >= 3:
+        suggestions.append("add a consecutive-loss cooldown")
+    if risk_blocks:
+        suggestions.append("align bot capital and frequency with Risk screen hard gates")
+    if losing_trades > int(row.get("total_trades", 0) or 0) * 0.55 and losing_trades > 0:
+        suggestions.append("analyze losing trade clusters in the historical journal")
+    return "; ".join(suggestions or ["keep monitoring; current evidence does not show a major journal/backtest mismatch"])
+
+
+def journal_improvement_suggestions(correlation: pd.DataFrame) -> list[str]:
+    if correlation.empty:
+        return []
+    messages: list[str] = []
+    worst_dd = correlation.sort_values("max_drawdown_pct", ascending=False).iloc[0]
+    weakest_pf = correlation.sort_values("profit_factor", ascending=True).iloc[0]
+    if float(worst_dd["max_drawdown_pct"]) >= 12:
+        messages.append(f"{worst_dd['bot_name']} has the largest drawdown ({float(worst_dd['max_drawdown_pct']):.1f}%). Suggested action: {worst_dd['suggestion']}.")
+    if float(weakest_pf["profit_factor"]) < 1.3:
+        messages.append(f"{weakest_pf['bot_name']} has weak profit factor ({float(weakest_pf['profit_factor']):.2f}). Suggested action: {weakest_pf['suggestion']}.")
+    blocked = correlation[correlation["risk_blocks"] > 0]
+    if not blocked.empty:
+        messages.append("Risk rejections are present in journal correlation; reduce per-bot capital, trade frequency, or portfolio exposure before deployment.")
+    if not messages:
+        messages.append("Backtest and journal evidence are aligned; continue collecting live journal events before changing parameters.")
+    return messages[:4]
 
 
 def load_backtest_trades() -> pd.DataFrame:
@@ -1999,7 +2083,15 @@ def validation_screen() -> None:
             "metrics": metrics_result,
         }
         save_validation_run(validation_row)
-        append_journal(selected_bot, symbol, "VALIDATION_RUN", "INFO", "COMPLETED", "validation/backtest completed", validation_row["metrics"])
+        append_journal(
+            selected_bot,
+            symbol,
+            "VALIDATION_RUN",
+            "INFO",
+            "COMPLETED",
+            "validation/backtest completed; " + improvement_suggestion_for_row(pd.Series(metrics_result), 0, int(metrics_result.get("total_trades", 0)) - int(metrics_result.get("total_trades", 0) * float(metrics_result.get("win_rate", 0.0)) / 100)),
+            validation_row["metrics"],
+        )
         show_validation_result(metrics_result, trades)
     runs = load_validation_runs_frame()
     if runs.empty:
