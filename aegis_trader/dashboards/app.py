@@ -49,6 +49,7 @@ BOT_INSTANCES_PATH = Path("reports/bot_instances.json")
 RISK_SETTINGS_PATH = Path("reports/risk_settings.json")
 JOURNAL_PATH = Path("reports/journal_events.json")
 VALIDATION_RUNS_PATH = Path("reports/validation_runs.json")
+STRATEGY_MATRIX_CACHE_PATH = Path("reports/strategy_matrix_cache.json")
 
 
 def setting_bool(name: str, default: bool = False) -> bool:
@@ -69,6 +70,7 @@ def setting_int(name: str, default: int) -> int:
 log_diagnostic(logger, "dashboard_start", database_enabled=setting_bool("database_enabled"), log_path=LOG_PATH)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def available_feature_files(data_dir: Path = Path("data/binance"), interval: str = "1h", days: int = 365) -> dict[str, Path]:
     files: dict[str, Path] = {}
     suffix = f"_{interval}_{days}d_features.parquet"
@@ -259,7 +261,7 @@ div[data-testid="stDataFrame"] {
 st.markdown(CSS, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=60, show_spinner=False)
 def binance_history_snapshot(path: str) -> dict[str, pd.DataFrame | dict[str, float | str]]:
     file_path = Path(path)
     if file_path.suffix == ".parquet":
@@ -337,7 +339,7 @@ def binance_history_snapshot(path: str) -> dict[str, pd.DataFrame | dict[str, fl
     return {"candles": history, "tape": tape, "book": book, "health": health, "journal": journal, "summary": summary}
 
 
-@st.cache_data(ttl=1)
+@st.cache_data(ttl=2, show_spinner=False)
 def load_live_scan(path: str = "reports/live_scan.json") -> pd.DataFrame:
     stream = load_live_stream()
     if setting_bool("database_enabled"):
@@ -358,7 +360,7 @@ def load_live_scan(path: str = "reports/live_scan.json") -> pd.DataFrame:
     return frame
 
 
-@st.cache_data(ttl=1)
+@st.cache_data(ttl=2, show_spinner=False)
 def load_live_stream(path: str = "reports/live_stream.json") -> dict[str, object]:
     file_path = Path(path)
     if not file_path.exists():
@@ -543,7 +545,7 @@ def normalize_scan_columns(scan: pd.DataFrame) -> pd.DataFrame:
     return scan
 
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=5, show_spinner=False)
 def load_live_scan_heartbeat(path: str = "reports/live_scan_heartbeat.json") -> dict[str, object]:
     if setting_bool("database_enabled"):
         try:
@@ -597,10 +599,47 @@ def save_deployed_strategy_names(names: list[str]) -> None:
     DEPLOYED_STRATEGIES_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=900, show_spinner=False)
 def load_strategy_matrix(strategy_names: tuple[str, ...]) -> tuple[pd.DataFrame, pd.DataFrame]:
     matrix = run_strategy_matrix(list(strategy_names))
     return matrix, aggregate_strategy_matrix(matrix)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_cached_strategy_matrix(strategy_names: tuple[str, ...]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not STRATEGY_MATRIX_CACHE_PATH.exists():
+        return pd.DataFrame(), pd.DataFrame()
+    try:
+        payload = json.loads(STRATEGY_MATRIX_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return pd.DataFrame(), pd.DataFrame()
+    cached_names = tuple(payload.get("strategy_names", []))
+    if set(cached_names) != set(strategy_names):
+        return pd.DataFrame(), pd.DataFrame()
+    rows = payload.get("rows", [])
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame(), pd.DataFrame()
+    matrix = pd.DataFrame(rows)
+    return matrix, aggregate_strategy_matrix(matrix)
+
+
+def refresh_strategy_matrix_cache(strategy_names: tuple[str, ...]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    matrix, aggregate = load_strategy_matrix(strategy_names)
+    STRATEGY_MATRIX_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STRATEGY_MATRIX_CACHE_PATH.write_text(
+        json.dumps(
+            {
+                "generated_at": datetime.now(UTC).isoformat(),
+                "strategy_names": list(strategy_names),
+                "rows": matrix.to_dict(orient="records") if not matrix.empty else [],
+            },
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    load_cached_strategy_matrix.clear()
+    return matrix, aggregate
 
 
 def load_json_list(path: Path) -> list[dict[str, object]]:
@@ -620,6 +659,7 @@ def save_json_list(path: Path, rows: list[dict[str, object]]) -> None:
     path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def load_risk_settings() -> dict[str, object]:
     if setting_bool("database_enabled"):
         try:
@@ -647,6 +687,7 @@ def save_risk_settings(values: dict[str, object]) -> None:
             asyncio.run(_save_risk_settings_to_db(values))
             log_diagnostic(logger, "risk_settings_saved", source="database", kill_switch=values.get("kill_switch"), max_cash_per_trade=values.get("max_cash_per_trade"))
             append_journal("SYSTEM", "", "RISK_SETTINGS", "INFO", "UPDATED", "portfolio risk gates updated", values)
+            load_risk_settings.clear()
             return
         except Exception as exc:
             logger.exception("risk_settings_database_save_failed fallback=file")
@@ -654,8 +695,10 @@ def save_risk_settings(values: dict[str, object]) -> None:
     RISK_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     RISK_SETTINGS_PATH.write_text(json.dumps(values, indent=2), encoding="utf-8")
     append_journal("SYSTEM", "", "RISK_SETTINGS", "INFO", "UPDATED", "portfolio risk gates updated", values)
+    load_risk_settings.clear()
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def load_bot_instances() -> pd.DataFrame:
     if setting_bool("database_enabled"):
         try:
@@ -688,11 +731,13 @@ def save_bot_instances(frame: pd.DataFrame) -> None:
 
             asyncio.run(_save_bot_instances_to_db(frame))
             log_diagnostic(logger, "bot_instances_saved", source="database", rows=len(frame))
+            load_bot_instances.clear()
             return
         except Exception as exc:
             logger.exception("bot_instances_database_save_failed fallback=file")
             append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "BOT_INSTANCES", str(exc))
     save_json_list(BOT_INSTANCES_PATH, frame.to_dict(orient="records"))
+    load_bot_instances.clear()
 
 
 def append_journal(bot_name: str, symbol: str, event_type: str, severity: str, decision: str, reason: str, metrics: dict[str, object] | None = None) -> None:
@@ -715,11 +760,13 @@ def append_journal(bot_name: str, symbol: str, event_type: str, severity: str, d
                 )
             )
             log_diagnostic(logger, "journal_event_saved", source="database", bot_name=bot_name, event_type=event_type, severity=severity, decision=decision)
+            load_journal_events.clear()
             return
         except Exception as exc:
             logger.exception("journal_database_save_failed fallback=file")
             append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "JOURNAL", str(exc))
     append_file_journal(bot_name, symbol, event_type, severity, decision, reason, metrics)
+    load_journal_events.clear()
 
 
 def append_file_journal(bot_name: str, symbol: str, event_type: str, severity: str, decision: str, reason: str, metrics: dict[str, object] | None = None) -> None:
@@ -739,8 +786,10 @@ def append_file_journal(bot_name: str, symbol: str, event_type: str, severity: s
         },
     )
     save_json_list(JOURNAL_PATH, rows[:500])
+    load_journal_events.clear()
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def load_journal_events() -> pd.DataFrame:
     if setting_bool("database_enabled"):
         try:
@@ -755,6 +804,7 @@ def load_journal_events() -> pd.DataFrame:
     return pd.DataFrame(load_json_list(JOURNAL_PATH))
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def load_validation_runs_frame() -> pd.DataFrame:
     if setting_bool("database_enabled"):
         try:
@@ -776,6 +826,7 @@ def save_validation_run(row: dict[str, object]) -> None:
 
             asyncio.run(_save_validation_run_to_db(row))
             log_diagnostic(logger, "validation_run_saved", source="database", run_id=row.get("run_id"), bot_name=row.get("bot_name"), state=row.get("state"))
+            load_validation_runs_frame.clear()
             return
         except Exception as exc:
             logger.exception("validation_database_save_failed fallback=file")
@@ -783,6 +834,7 @@ def save_validation_run(row: dict[str, object]) -> None:
     rows = load_json_list(VALIDATION_RUNS_PATH)
     rows.insert(0, row)
     save_json_list(VALIDATION_RUNS_PATH, rows[:100])
+    load_validation_runs_frame.clear()
 
 
 def default_bot_instances() -> list[dict[str, object]]:
@@ -1208,9 +1260,13 @@ def dashboard_screen(summary: dict[str, float | str]) -> None:
     portfolio_performance_overview(scan, bots)
     status_row(summary)
     st.markdown("### 1Y Trading System Backtest")
-    matrix, aggregate = load_strategy_matrix(tuple(STRATEGY_REGISTRY))
+    strategy_names = tuple(STRATEGY_REGISTRY)
+    matrix, aggregate = load_cached_strategy_matrix(strategy_names)
+    if st.button("Refresh 1Y backtest cache", use_container_width=True):
+        with st.spinner("Running one-year strategy matrix. This is intentionally manual so screen navigation stays fast."):
+            matrix, aggregate = refresh_strategy_matrix_cache(strategy_names)
     if aggregate.empty:
-        st.info("No one-year Binance feature files are available yet. Run the backfill and metrics job first.")
+        st.info("No cached trading-system backtest is available yet. Use Refresh 1Y backtest cache when you want to run the heavier matrix calculation.")
         return
     strategy_system_charts(matrix, aggregate)
     strategy_tiles(aggregate)
@@ -1705,7 +1761,12 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
         st.info("No bot instances exist yet. Create one in Bot Framework.")
         return
     active_names = tuple(sorted(set(bots["strategy"].astype(str).tolist()))) if "strategy" in bots else tuple(load_deployed_strategy_names())
-    matrix, aggregate = load_strategy_matrix(active_names)
+    matrix, aggregate = load_cached_strategy_matrix(active_names)
+    if matrix.empty and set(active_names).issubset(set(STRATEGY_REGISTRY)):
+        all_matrix, _ = load_cached_strategy_matrix(tuple(STRATEGY_REGISTRY))
+        if not all_matrix.empty:
+            matrix = all_matrix[all_matrix["strategy"].astype(str).isin(active_names)]
+            aggregate = aggregate_strategy_matrix(matrix)
     runtime_tiles(bots, scan, matrix, aggregate)
     st.markdown("### Runtime Controls")
     for _, bot in bots.iterrows():
@@ -2006,6 +2067,7 @@ def journal_improvement_suggestions(correlation: pd.DataFrame) -> list[str]:
     return messages[:4]
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def load_backtest_trades() -> pd.DataFrame:
     path = Path("reports/top10_replay_trades.csv")
     if not path.exists():
