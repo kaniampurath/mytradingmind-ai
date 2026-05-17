@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+import pandas as pd
+from pathlib import Path
+from uuid import uuid4
+
+from aegis_trader.runtime.bot_registry import BotRegistry
+from aegis_trader.runtime.runtime_manager import RuntimeManager
+
+
+def workspace_tmp() -> Path:
+    path = Path("tmp") / "tests" / str(uuid4())
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def test_runtime_state_is_file_persistent() -> None:
+    tmp_path = workspace_tmp()
+    registry = BotRegistry(tmp_path / "bots.json")
+    registry.save(pd.DataFrame([{"name": "Runtime Bot", "strategy": "ATR Trend Burst", "symbol": "ETH/USDT", "state": "BACKTESTED"}]))
+    state_path = tmp_path / "runtime_state.json"
+
+    manager = RuntimeManager(registry=registry, state_path=state_path)
+    manager.start_bot("Runtime_Bot", source="TEST")
+
+    recovered = RuntimeManager(registry=registry, state_path=state_path).list_bot_states()
+    assert recovered[0]["bot_id"] == "Runtime_Bot"
+    assert recovered[0]["status"] == "RUNNING"

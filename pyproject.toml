@@ -46,4 +46,4 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["aegis_trader*"]
+include = ["aegis_trader*", "mytradingmind*"]

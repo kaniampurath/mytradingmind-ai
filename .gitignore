@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+*.key
+*.pem
+secrets/
 aegis.db
 data/
 logs/

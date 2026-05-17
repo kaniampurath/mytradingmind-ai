@@ -21,6 +21,9 @@ from aegis_trader.bot.framework import BotDeployment, StrategyAgnosticBot
 from aegis_trader.core.config import settings
 from aegis_trader.core.enums import CertificationState
 from aegis_trader.core.logging import configure_logging, log_diagnostic, redact_url
+from aegis_trader.llm.reasoning_agent import ReasoningAgent
+from aegis_trader.runtime.command_bus import RuntimeCommand, RuntimeCommandBus
+from aegis_trader.runtime.runtime_manager import RuntimeManager
 from aegis_trader.storage.bot_repository import (
     DEFAULT_RISK_SETTINGS,
     append_journal_event,
@@ -1875,6 +1878,101 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
                 st.warning("Bot stopped.")
 
 
+def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
+    st.markdown("### Bot Admin")
+    st.caption("Runtime command center. Actions go through the shared command bus and runtime manager; this screen does not place exchange orders.")
+    manager = RuntimeManager()
+    bus = RuntimeCommandBus(manager)
+    status = manager.runtime_status()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Runtime", str(status["runtime"]))
+    c2.metric("Mode", str(status["runtime_mode"]))
+    c3.metric("Running Bots", int(status["running_bots"]))
+    c4.metric("LLM", str(status["llm_state"]).replace("_", " "))
+    states = manager.list_bot_states()
+    if not states:
+        st.info("No bots are configured yet. Create a bot in Bot Framework first.")
+        return
+    for state in states:
+        bot_id = str(state["bot_id"])
+        status_text = str(state.get("status", "STOPPED"))
+        with st.container(border=True):
+            left, right = st.columns([1.4, 1])
+            with left:
+                st.markdown(f"#### {state.get('name', bot_id)}")
+                st.caption(f"ID `{bot_id}` | {state.get('strategy', '')} | {state.get('symbol', '')}")
+                chips = [
+                    f"status {status_text}",
+                    f"mode {state.get('mode', 'PAPER')}",
+                    f"runtime {state.get('runtime_mode', 'HEADLESS')}",
+                    f"risk {state.get('risk_state', 'OK')}",
+                    f"validation {state.get('validation_status', 'UNKNOWN')}",
+                    f"LLM {state.get('llm_state', 'RULE_BASED')}",
+                ]
+                st.markdown(" ".join(f"<span class='pill'>{chip}</span>" for chip in chips), unsafe_allow_html=True)
+                st.caption(f"Last heartbeat: {state.get('last_heartbeat') or 'pending'}")
+                if state.get("last_error"):
+                    st.warning(str(state["last_error"]))
+                with st.expander(f"{state.get('name', bot_id)} CLI equivalents", expanded=False):
+                    st.code(
+                        "\n".join(
+                            [
+                                f"python -m mytradingmind.runtime start-bot --bot-id {bot_id}",
+                                f"python -m mytradingmind.runtime stop-bot --bot-id {bot_id}",
+                                f"python -m mytradingmind.runtime pause-bot --bot-id {bot_id}",
+                                f"python -m mytradingmind.runtime resume-bot --bot-id {bot_id}",
+                                "python -m mytradingmind.runtime status",
+                            ]
+                        ),
+                        language="bash",
+                    )
+            with right:
+                action_cols = st.columns(3)
+                actions = [
+                    ("START", "START_BOT", status_text == "RUNNING"),
+                    ("STOP", "STOP_BOT", status_text == "STOPPED"),
+                    ("RESTART", "RESTART_BOT", False),
+                    ("PAUSE", "PAUSE_BOT", status_text != "RUNNING"),
+                    ("RESUME", "RESUME_BOT", status_text != "PAUSED"),
+                    ("RUN VALIDATION", "RUN_VALIDATION", False),
+                ]
+                for index, (label, action, disabled) in enumerate(actions):
+                    if action_cols[index % 3].button(label, key=f"admin-{action}-{bot_id}", disabled=disabled, use_container_width=True):
+                        result = bus.dispatch(RuntimeCommand(action, bot_id=bot_id, source="BOT_ADMIN"))
+                        append_journal(
+                            str(state.get("name", bot_id)),
+                            str(state.get("symbol", "")),
+                            "BOT_ADMIN_ACTION",
+                            "INFO" if result.ok else "ERROR",
+                            action,
+                            result.message,
+                            {"bot_id": bot_id, "command_id": result.command_id, "state": result.state},
+                        )
+                        if result.ok:
+                            st.success(f"{label} accepted for {state.get('name', bot_id)}")
+                        else:
+                            st.error(result.message)
+                        load_bot_instances.clear()
+                        st.rerun()
+                view_cols = st.columns(3)
+                if view_cols[0].button("VIEW JOURNAL", key=f"admin-journal-{bot_id}", use_container_width=True):
+                    st.session_state["screen"] = "JOURNAL"
+                    st.rerun()
+                if view_cols[1].button("OPEN RUNTIME", key=f"admin-runtime-{bot_id}", use_container_width=True):
+                    st.session_state["screen"] = "BOT RUNTIME"
+                    st.rerun()
+                with view_cols[2].popover("LLM HEALTH", use_container_width=True):
+                    comment = ReasoningAgent().explain_status(
+                        {
+                            "spread_bps": 0,
+                            "liquidity_score": 1,
+                            "orderflow_score": 50,
+                            "bot_status": status_text,
+                        }
+                    )
+                    st.write(comment)
+
+
 def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, aggregate: pd.DataFrame) -> None:
     scan = normalize_scan_columns(scan) if not scan.empty else scan
     html = ["<div class='bucket-grid'>"]
@@ -2502,6 +2600,7 @@ with st.sidebar:
             "RISK",
             "BOT FRAMEWORK",
             "BOT RUNTIME",
+            "BOT ADMIN",
             "SYSTEM HEALTH",
             "JOURNAL",
             "VALIDATION LAB",
@@ -2541,6 +2640,8 @@ elif page == "BOT FRAMEWORK":
     bot_framework_screen(data)
 elif page == "BOT RUNTIME":
     bot_runtime_screen(data)
+elif page == "BOT ADMIN":
+    bot_admin_screen(data)
 elif page == "SYSTEM HEALTH":
     health_screen(data)
 elif page == "JOURNAL":

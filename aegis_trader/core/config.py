@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     log_backup_count: int = 5
     openai_model: str = "gpt-4o"
     openai_fallback_model: str = "gpt-4o-mini"
+    llm_enabled: bool = True
+    llm_model: str = "gpt-4o"
+    llm_fallback_model: str = "gpt-4o-mini"
+    llm_timeout_ms: int = 2000
+    llm_mode: str = "openai"
 
     max_daily_loss_pct: float = 0.02
     max_position_notional: float = 250.0

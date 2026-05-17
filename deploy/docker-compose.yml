@@ -1,11 +1,28 @@
 services:
-  dashboard:
+  mytradingmind_dashboard:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     command: ["python", "scripts/start_dashboard.py", "--foreground", "--address", "0.0.0.0", "--port", "8501"]
     ports:
       - "8501:8501"
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../logs:/app/logs
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  mytradingmind_runtime:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "mytradingmind.runtime", "start", "--mode", "headless"]
     env_file:
       - ../.env
     volumes:
