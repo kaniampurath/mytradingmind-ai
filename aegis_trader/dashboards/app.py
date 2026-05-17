@@ -1957,10 +1957,10 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
                         st.rerun()
                 view_cols = st.columns(3)
                 if view_cols[0].button("VIEW JOURNAL", key=f"admin-journal-{bot_id}", use_container_width=True):
-                    st.session_state["screen"] = "JOURNAL"
+                    st.query_params["screen"] = "JOURNAL"
                     st.rerun()
                 if view_cols[1].button("OPEN RUNTIME", key=f"admin-runtime-{bot_id}", use_container_width=True):
-                    st.session_state["screen"] = "BOT RUNTIME"
+                    st.query_params["screen"] = "BOT RUNTIME"
                     st.rerun()
                 with view_cols[2].popover("LLM HEALTH", use_container_width=True):
                     comment = ReasoningAgent().explain_status(
@@ -2588,25 +2588,35 @@ def validation_remediation(metrics: CertificationMetrics, reasons: list[str]) ->
     return " ".join(guidance or ["Validation is acceptable for continued paper/testnet monitoring."])
 
 
+SCREEN_OPTIONS = [
+    "DASHBOARD",
+    "LIVE TRADING",
+    "ORDERFLOW",
+    "RISK",
+    "BOT FRAMEWORK",
+    "BOT RUNTIME",
+    "BOT ADMIN",
+    "SYSTEM HEALTH",
+    "JOURNAL",
+    "VALIDATION LAB",
+]
+
+
 with st.sidebar:
     st.title("mytradingmind.ai")
     feature_files = available_feature_files()
     selectable_symbols = list(feature_files)
+    requested_screen = st.query_params.get("screen", "")
+    if isinstance(requested_screen, list):
+        requested_screen = requested_screen[0] if requested_screen else ""
+    screen_index = SCREEN_OPTIONS.index(requested_screen) if requested_screen in SCREEN_OPTIONS else 0
+    if requested_screen in SCREEN_OPTIONS and st.session_state.get("screen_selector") != requested_screen:
+        st.session_state.pop("screen_selector", None)
     page = st.radio(
         "Screen",
-        [
-            "DASHBOARD",
-            "LIVE TRADING",
-            "ORDERFLOW",
-            "RISK",
-            "BOT FRAMEWORK",
-            "BOT RUNTIME",
-            "BOT ADMIN",
-            "SYSTEM HEALTH",
-            "JOURNAL",
-            "VALIDATION LAB",
-        ],
-        key="screen",
+        SCREEN_OPTIONS,
+        index=screen_index,
+        key="screen_selector",
     )
     st.divider()
     default_symbol = selectable_symbols[0] if selectable_symbols else ""

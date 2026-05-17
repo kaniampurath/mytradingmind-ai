@@ -9,3 +9,5 @@ def test_bot_admin_navigation_and_command_bus_wiring_exist() -> None:
     assert "def bot_admin_screen" in text
     assert "RuntimeCommandBus" in text
     assert "python -m mytradingmind.runtime start-bot" in text
+    assert 'st.session_state["screen"]' not in text
+    assert "screen_selector" in text
