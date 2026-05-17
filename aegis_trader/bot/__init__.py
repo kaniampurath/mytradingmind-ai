@@ -1,0 +1,2 @@
+"""Strategy-agnostic bot framework."""
+

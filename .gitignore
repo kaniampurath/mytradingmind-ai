@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+aegis.db
+data/
+logs/
+reports/
+tmp/
+dist/
+build/
+*.egg-info/

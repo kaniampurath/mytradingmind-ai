@@ -1,0 +1,59 @@
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["python", "scripts/start_dashboard.py", "--foreground", "--address", "0.0.0.0", "--port", "8501"]
+    ports:
+      - "8501:8501"
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../logs:/app/logs
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  scanner:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["python", "scripts/live_scan_binance.py", "--loop", "--database", "--sleep", "300", "--transport", "python"]
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../logs:/app/logs
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-bots}
+      MARIADB_USER: ${MARIADB_USER:-tradeuser}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-change_me}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-change_root_me}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MARIADB_ROOT_PASSWORD:-change_root_me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  mariadb_data:
