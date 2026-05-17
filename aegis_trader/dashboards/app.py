@@ -862,7 +862,7 @@ def normalize_bot_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def transition_bot(name: str, state: str, reason: str) -> None:
+def transition_bot(name: str, state: str, reason: str, parameter_updates: dict[str, object] | None = None) -> None:
     bots = load_bot_instances()
     if bots.empty or name not in set(bots["name"].astype(str)):
         log_diagnostic(logger, "bot_transition_skipped", name=name, state=state, reason="bot_not_found")
@@ -872,6 +872,11 @@ def transition_bot(name: str, state: str, reason: str) -> None:
     bots.loc[mask, "state"] = state
     bots.loc[mask, "status_reason"] = reason
     bots.loc[mask, "heartbeat_at"] = now
+    if parameter_updates:
+        current_parameters = bots.loc[mask, "parameters"].iloc[0]
+        if not isinstance(current_parameters, dict):
+            current_parameters = {}
+        bots.loc[mask, "parameters"] = [dict(current_parameters, **parameter_updates)]
     if state in {"DEPLOYED", "RUNNING"}:
         bots.loc[mask, "deployed_at"] = now
     save_bot_instances(bots)
@@ -900,6 +905,31 @@ def lifecycle_next_action(state: str) -> str:
         "STOPPED": "Backtest again before redeploying",
         "FAILED": "Review Journal and Risk, then backtest again",
     }.get(state, "Review bot state")
+
+
+def bot_live_mark(bot: pd.Series, scan: pd.DataFrame) -> dict[str, float | str | bool]:
+    symbol = str(bot.get("symbol", ""))
+    scan_row = scan[scan["symbol"].astype(str) == symbol].iloc[0] if not scan.empty and symbol in set(scan["symbol"].astype(str)) else pd.Series(dtype=object)
+    last_price = float(scan_row.get("last_close", 0.0) or 0.0)
+    params = bot.get("parameters")
+    params = params if isinstance(params, dict) else {}
+    entry_price = float(params.get("runtime_entry_price") or scan_row.get("active_entry", 0.0) or 0.0)
+    capital = float(bot.get("capital", 0.0) or 0.0)
+    state = str(bot.get("state", "DRAFT"))
+    in_market = state in {"RUNNING", "DEPLOYED"}
+    pnl_pct = 0.0 if not in_market or entry_price <= 0 or last_price <= 0 else (last_price - entry_price) / entry_price * 100
+    pnl = capital * pnl_pct / 100
+    return {
+        "symbol": symbol,
+        "last_price": last_price,
+        "entry_price": entry_price,
+        "capital": capital,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "socket_age": stream_age_text(scan_row.get("stream_updated_at", "")),
+        "socket_status": str(scan_row.get("stream_status", "not_started")),
+        "in_market": in_market,
+    }
 
 
 def risk_gate_for_bot(bot: pd.Series, risk: dict[str, object]) -> tuple[bool, str]:
@@ -1805,7 +1835,20 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
                     continue
                 ok, reason = risk_gate_for_bot(bot, load_risk_settings())
                 if ok:
-                    transition_bot(str(bot["name"]), "RUNNING", "deployed and running 24x7")
+                    live_mark = bot_live_mark(bot, scan)
+                    if float(live_mark["last_price"]) <= 0:
+                        st.error("Cannot deploy: Binance socket/latest price is not available for this bot symbol.")
+                        continue
+                    transition_bot(
+                        str(bot["name"]),
+                        "RUNNING",
+                        f"deployed and running 24x7 from socket mark ${float(live_mark['last_price']):.6f}",
+                        {
+                            "runtime_entry_price": float(live_mark["last_price"]),
+                            "runtime_entry_symbol": str(live_mark["symbol"]),
+                            "runtime_entry_source": "binance_socket",
+                        },
+                    )
                     st.success(reason)
                 else:
                     transition_bot(str(bot["name"]), "FAILED", f"risk rejection: {reason}")
@@ -1824,10 +1867,10 @@ def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, 
         symbol = str(row.get("symbol", ""))
         strategy = str(row.get("strategy", ""))
         state_class = "good" if state in {"RUNNING", "DEPLOYED"} else "bad" if state == "FAILED" else "warn" if state in {"PAUSED", "BACKTESTED"} else "info"
-        scan_row = scan[scan["symbol"].astype(str) == symbol].iloc[0] if not scan.empty and symbol in set(scan["symbol"].astype(str)) else pd.Series(dtype=object)
         perf = matrix[(matrix["strategy"].astype(str) == strategy) & (matrix["symbol"].astype(str) == symbol)] if not matrix.empty else pd.DataFrame()
         perf_row = perf.iloc[0] if not perf.empty else pd.Series(dtype=object)
-        pnl = float(scan_row.get("active_pnl", 0.0) or 0.0)
+        live_mark = bot_live_mark(row, scan)
+        pnl = float(live_mark["pnl"])
         drawdown = float(perf_row.get("max_drawdown_pct", 0.0) or 0.0)
         win_rate = float(perf_row.get("win_rate", 0.0) or 0.0)
         pf = float(perf_row.get("profit_factor", 0.0) or 0.0)
@@ -1840,6 +1883,7 @@ def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, 
             f"<div class='bucket-title'><span>{row['name']}</span><span class='pill {state_class}'>{state}</span></div>"
             f"<div class='scan-meta'>{strategy} | {symbol}</div>"
             f"<div class='status-value {pnl_class}'>${pnl:,.2f}</div>"
+            f"<div class='scan-meta'>socket last ${float(live_mark['last_price']):,.6f} | entry ${float(live_mark['entry_price']):,.6f} | {live_mark['socket_status']} {live_mark['socket_age']}</div>"
             f"<div class='scan-meta'>health {health} | risk {row.get('status_reason', '')}</div>"
             f"<div class='scan-meta'>next {lifecycle_next_action(state)}</div>"
             f"<div class='scan-meta'>DD {drawdown:.2f}% | win {win_rate:.1f}% | PF {pf:.2f}</div>"
@@ -1857,17 +1901,20 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
     scan = normalize_scan_columns(scan) if not scan.empty else scan
     rows: list[dict[str, object]] = []
     for _, bot in bots.iterrows():
-        symbol = str(bot.get("symbol", ""))
-        scan_row = scan[scan["symbol"].astype(str) == symbol].iloc[0] if not scan.empty and symbol in set(scan["symbol"].astype(str)) else pd.Series(dtype=object)
+        live_mark = bot_live_mark(bot, scan)
         rows.append(
             {
                 "name": str(bot.get("name", "")),
                 "state": str(bot.get("state", "DRAFT")),
-                "symbol": symbol,
-                "pnl": float(scan_row.get("active_pnl", 0.0) or 0.0),
-                "pnl_pct": float(scan_row.get("active_pnl_pct", 0.0) or 0.0),
+                "symbol": str(live_mark["symbol"]),
+                "entry": float(live_mark["entry_price"]),
+                "last": float(live_mark["last_price"]),
+                "capital": float(live_mark["capital"]),
+                "pnl": float(live_mark["pnl"]),
+                "pnl_pct": float(live_mark["pnl_pct"]),
                 "deployed_at": str(bot.get("deployed_at", "") or ""),
                 "heartbeat_at": str(bot.get("heartbeat_at", "") or ""),
+                "in_market": bool(live_mark["in_market"]),
             }
         )
     components.html(
@@ -1875,6 +1922,8 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
         <div id="runtime-live" style="font-family:Inter,Arial,sans-serif;color:#e8edf2;background:#111820;border:1px solid #26323b;border-radius:8px;padding:10px;margin:8px 0;"></div>
         <script>
         const rows = {json.dumps(rows)};
+        const states = Object.fromEntries(rows.map(r => [r.symbol.replace("/", "").toLowerCase(), r]));
+        let socketStatus = "starting";
         function ageText(value) {{
           if (!value) return "pending";
           const ts = new Date(value);
@@ -1884,14 +1933,43 @@ def runtime_live_metrics_component(bots: pd.DataFrame, scan: pd.DataFrame) -> No
           const mins = Math.floor(secs / 60);
           return mins + "m " + (secs % 60) + "s";
         }}
+        function mark(row) {{
+          const entry = Number(row.entry || 0);
+          const last = Number(row.last || 0);
+          if (!row.in_market || entry <= 0 || last <= 0) return {{pnl: 0, pnlPct: 0}};
+          const pnlPct = (last - entry) / entry * 100;
+          return {{pnl: Number(row.capital || 0) * pnlPct / 100, pnlPct}};
+        }}
         function render() {{
           document.getElementById("runtime-live").innerHTML =
-            "<div style='font-size:12px;color:#94a3ad;margin-bottom:6px'>Live runtime metrics update in-place; persisted state comes from MariaDB/file cache.</div>" +
+            `<div style='font-size:12px;color:#94a3ad;margin-bottom:6px'>Per-bot marks update from Binance socket in-place. Socket: ${{socketStatus}}.</div>` +
             rows.map(r => `<div style='display:grid;grid-template-columns:1.2fr .7fr .7fr .7fr .7fr;gap:8px;border-top:1px solid #26323b;padding:6px 0'>
-              <b>${{r.name}}</b><span>${{r.state}}</span><span>${{r.symbol}}</span><span>$${{Number(r.pnl).toFixed(2)}} / ${{Number(r.pnl_pct).toFixed(2)}}%</span><span>uptime ${{ageText(r.deployed_at)}} | hb ${{ageText(r.heartbeat_at)}}</span>
+              <b>${{r.name}}</b><span>${{r.state}}</span><span>${{r.symbol}}</span><span>$${{mark(r).pnl.toFixed(2)}} / ${{mark(r).pnlPct.toFixed(2)}}%</span><span>last $${{Number(r.last).toFixed(6)}} | entry $${{Number(r.entry).toFixed(6)}} | uptime ${{ageText(r.deployed_at)}}</span>
             </div>`).join("");
         }}
+        function connect() {{
+          const symbols = [...new Set(rows.map(r => r.symbol.replace("/", "").toLowerCase()).filter(Boolean))];
+          if (!symbols.length) {{
+            socketStatus = "no symbols";
+            render();
+            return;
+          }}
+          const ws = new WebSocket(`wss://stream.testnet.binance.vision/stream?streams=${{symbols.map(s => s + "@trade").join("/")}}`);
+          ws.onopen = () => {{ socketStatus = "streaming"; render(); }};
+          ws.onmessage = event => {{
+            const payload = JSON.parse(event.data);
+            const data = payload.data || payload;
+            const key = String(data.s || "").toLowerCase();
+            if (states[key] && data.p) {{
+              states[key].last = Number(data.p);
+              render();
+            }}
+          }};
+          ws.onerror = () => {{ socketStatus = "error"; render(); }};
+          ws.onclose = () => {{ socketStatus = "reconnecting"; render(); setTimeout(connect, 3000); }};
+        }}
         render();
+        connect();
         setInterval(render, 1000);
         </script>
         """,
