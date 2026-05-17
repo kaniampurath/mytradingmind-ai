@@ -68,7 +68,7 @@
     </style>
   </defs>
 
-  <rect width="1600" height="1050" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1598" height="1048" rx="20" fill="url(#bg)" stroke="#334155" stroke-width="2"/>
   <path d="M0 132 C250 80 385 195 620 115 C890 24 1080 142 1600 72 L1600 0 L0 0 Z" fill="#0ea5e9" opacity=".08"/>
   <path d="M0 1015 C310 905 540 1060 810 948 C1100 828 1280 930 1600 850 L1600 1050 L0 1050 Z" fill="#8b5cf6" opacity=".09"/>
 

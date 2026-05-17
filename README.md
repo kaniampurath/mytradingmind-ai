@@ -13,25 +13,7 @@ The system is designed around safety-first operation:
 
 ## High-Level Architecture
 
-```mermaid
-flowchart LR
-    Binance["Binance Spot Testnet<br/>public candles, trades, order book"] --> MarketData["Market Data Services<br/>backfill, scanner, websocket stream"]
-    MarketData --> Stores["Operational State<br/>MariaDB, Redis, reports cache"]
-    Stores --> Dashboard["Streamlit Ops Console<br/>Dashboard, Live Trading, Order Flow, Risk"]
-    Stores --> Runtime["Headless Runtime<br/>24x7 bot lifecycle, heartbeats, runtime state"]
-    Dashboard --> Admin["Bot Admin<br/>start, stop, pause, resume, validation commands"]
-    Admin --> CommandBus["Shared Command Bus<br/>idempotent commands, audit logging"]
-    CLI["CLI<br/>python -m mytradingmind.runtime"] --> CommandBus
-    CommandBus --> Runtime
-    Runtime --> Risk["Risk Gates<br/>capital, exposure, trade frequency, kill switch"]
-    Risk --> Strategies["Strategy-Agnostic Bot Host<br/>pluggable reusable strategies"]
-    Strategies --> Validation["Validation Lab<br/>backtests, certification, metrics"]
-    Strategies --> Journal["Journal<br/>decisions, risk blocks, runtime events"]
-    LLM["LLM Reasoning<br/>OpenAI or rule fallback"] --> Admin
-    LLM --> Journal
-    LLM --> Validation
-    LLM --> Dashboard
-```
+![mytradingmind.ai layered architecture](docs/assets/mytradingmind-architecture.svg)
 
 Detailed architecture notes:
 

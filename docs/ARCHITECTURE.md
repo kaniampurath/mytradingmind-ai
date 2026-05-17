@@ -7,6 +7,7 @@ mytradingmind.ai is designed as a crypto-neutral, testnet-first trading operatin
 ## Layered System Architecture
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07111f", "mainBkg": "#111827", "primaryColor": "#172554", "primaryTextColor": "#f8fafc", "primaryBorderColor": "#38bdf8", "lineColor": "#94a3b8", "secondaryColor": "#1e293b", "tertiaryColor": "#0f172a", "clusterBkg": "#0f172a", "clusterBorder": "#334155", "fontFamily": "Inter, Segoe UI, Arial, sans-serif"}} }%%
 flowchart TB
     classDef exchange fill:#101820,stroke:#4cc9f0,color:#eef6ff,stroke-width:1px
     classDef ingest fill:#10251f,stroke:#5eead4,color:#eafffb,stroke-width:1px
@@ -144,6 +145,7 @@ flowchart TB
 ## Runtime And Control Architecture
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07111f", "actorBkg": "#172554", "actorTextColor": "#f8fafc", "actorBorder": "#38bdf8", "activationBkgColor": "#1e293b", "activationBorderColor": "#60a5fa", "sequenceNumberColor": "#0f172a", "signalColor": "#e2e8f0", "signalTextColor": "#f8fafc", "labelBoxBkgColor": "#111827", "labelBoxBorderColor": "#475569", "labelTextColor": "#f8fafc", "loopTextColor": "#f8fafc", "noteBkgColor": "#1e293b", "noteTextColor": "#f8fafc", "fontFamily": "Inter, Segoe UI, Arial, sans-serif"}} }%%
 sequenceDiagram
     autonumber
     participant Operator as Operator
@@ -175,6 +177,7 @@ sequenceDiagram
 ## Data And Decision Flow
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07111f", "mainBkg": "#111827", "primaryColor": "#172554", "primaryTextColor": "#f8fafc", "primaryBorderColor": "#38bdf8", "lineColor": "#94a3b8", "secondaryColor": "#1e293b", "tertiaryColor": "#0f172a", "fontFamily": "Inter, Segoe UI, Arial, sans-serif"}} }%%
 flowchart LR
     A["Binance market data"] --> B["Scanner and websocket stream"]
     B --> C["Feature / orderflow / regime state"]
@@ -216,6 +219,7 @@ flowchart LR
 ## Deployment Shape
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07111f", "mainBkg": "#111827", "primaryColor": "#172554", "primaryTextColor": "#f8fafc", "primaryBorderColor": "#38bdf8", "lineColor": "#94a3b8", "secondaryColor": "#1e293b", "tertiaryColor": "#0f172a", "fontFamily": "Inter, Segoe UI, Arial, sans-serif"}} }%%
 flowchart LR
     GitHub["GitHub repository"] --> Droplet["Ubuntu DigitalOcean droplet"]
     Droplet --> Compose["docker compose"]
