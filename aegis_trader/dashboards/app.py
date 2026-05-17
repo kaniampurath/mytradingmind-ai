@@ -1197,11 +1197,6 @@ def portfolio_performance_overview(scan: pd.DataFrame, bots: pd.DataFrame) -> No
         st.plotly_chart(layout_chart(fig, 300), use_container_width=True)
 
 
-def dashboard_screen(summary: dict[str, float | str]) -> None:
-    portfolio_performance_overview(load_live_scan(), load_bot_instances())
-    status_row(summary)
-
-
 def price_panel(candles: pd.DataFrame) -> go.Figure:
     symbol = str(candles["symbol"].iloc[-1]) if "symbol" in candles and not candles.empty else "Selected crypto"
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.04)
@@ -1956,8 +1951,19 @@ with st.sidebar:
     st.title("mytradingmind.ai")
     feature_files = available_feature_files()
     selectable_symbols = list(feature_files)
-    page = "DASHBOARD"
-    st.radio("Screen", ["DASHBOARD"], index=0, disabled=True)
+    page = st.radio(
+        "Screen",
+        [
+            "LIVE TRADING",
+            "ORDERFLOW",
+            "RISK",
+            "BOT FRAMEWORK",
+            "BOT RUNTIME",
+            "SYSTEM HEALTH",
+            "JOURNAL",
+            "VALIDATION LAB",
+        ],
+    )
     st.divider()
     default_symbol = selectable_symbols[0] if selectable_symbols else ""
     data_file = feature_files.get(default_symbol, Path("__missing_feature_file__"))
@@ -1976,4 +1982,22 @@ assert isinstance(summary, dict)
 
 st.markdown("# mytradingmind.ai Ops Console")
 st.markdown("<div class='subtle'>Binance Spot Testnet live scan with one-year Binance candle backtest and strategy performance tiles.</div>", unsafe_allow_html=True)
-dashboard_screen(summary)
+portfolio_performance_overview(load_live_scan(), load_bot_instances())
+status_row(summary)
+
+if page == "LIVE TRADING":
+    live_trading(data)
+elif page == "ORDERFLOW":
+    orderflow(data)
+elif page == "RISK":
+    risk_screen(data)
+elif page == "BOT FRAMEWORK":
+    bot_framework_screen(data)
+elif page == "BOT RUNTIME":
+    bot_runtime_screen(data)
+elif page == "SYSTEM HEALTH":
+    health_screen(data)
+elif page == "JOURNAL":
+    journal_screen(data)
+elif page == "VALIDATION LAB":
+    validation_screen()
