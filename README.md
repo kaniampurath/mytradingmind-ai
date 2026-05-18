@@ -328,6 +328,157 @@ Then use:
 
 New strategies should be considered experimental until they pass backtesting, stress testing, journal review, and risk certification.
 
+## Convert A TradingView Strategy Into The Strategy Registry
+
+TradingView PineScript strategies cannot be executed directly inside mytradingmind.ai. They should be translated into a Python strategy plugin so the bot framework can backtest, validate, journal, deploy, and monitor the strategy using the same runtime controls as every other bot.
+
+This keeps the platform deterministic, testable, and independent from TradingView.
+
+### Conversion Workflow
+
+1. Extract the PineScript rules:
+   - timeframe, for example `5m`
+   - entry conditions
+   - exit conditions
+   - stop-loss and take-profit logic
+   - partial exit rules
+   - session filters
+   - symbol-specific parameters
+   - commission, slippage, and capital assumptions
+
+2. Map PineScript indicators to platform features:
+   - `ta.ema(close, 20)` -> EMA feature or strategy-local replay calculation
+   - `ta.atr(14)` -> ATR feature
+   - `ta.crossover(a, b)` -> previous candle below/equal and current candle above
+   - `ta.crossunder(a, b)` -> previous candle above/equal and current candle below
+   - `time(..., session)` -> UTC session filter using candle `open_time`
+   - `strategy.entry()` -> strategy signal
+   - `strategy.exit()` / `strategy.close()` -> backtest trade management logic
+
+3. Add the strategy as a Python plugin under:
+
+```text
+aegis_trader/strategies/backtest_plugins.py
+```
+
+4. Register the strategy in the strategy registry so it appears in:
+   - Bot Framework
+   - Bot Admin
+   - Validation Lab
+   - Bot Runtime
+   - Journal
+
+5. Backfill matching Binance data for the strategy timeframe.
+
+Example for a 5-minute strategy:
+
+```powershell
+python scripts/binance_backfill.py --interval 5m --symbols BTC/USDT,ETH/USDT,SOL/USDT
+```
+
+6. Validate the strategy before deployment:
+   - run a 1-year backtest
+   - inspect trades in Journal
+   - review drawdown, win rate, expectancy, Sharpe, and profit factor
+   - test in Binance testnet / paper mode only
+
+### Example TradingView-Style Strategy Plugin
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pandas as pd
+
+from aegis_trader.strategies.backtest_plugins import BacktestSignal, BacktestStrategy
+
+
+@dataclass(frozen=True)
+class TradingViewAtrBurstStrategy(BacktestStrategy):
+    name: str = "TradingView ATR Burst"
+    description: str = "Example PineScript-derived ATR trend burst strategy."
+    default_timeframe: str = "5m"
+    max_hold_bars: int = 24
+
+    atr_len: int = 14
+    ema_fast_len: int = 20
+    ema_slow_len: int = 200
+    atr_burst_mult: float = 1.5
+    stop_mult: float = 1.22
+    risk_pct: float = 1.0
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        if previous is None:
+            return None
+
+        close = float(row["close"])
+        open_price = float(row["open"])
+        atr = float(row.get("atr14", 0.0))
+        ema_fast = float(row.get("ema20", 0.0))
+        ema_slow = float(row.get("ema200", 0.0))
+
+        if atr <= 0 or ema_slow <= 0:
+            return None
+
+        ratio = ema_fast / ema_slow
+        bull_trend = 0.985 < ratio < 1.05
+        bar_change = abs(close - open_price)
+        atr_burst = bar_change >= self.atr_burst_mult * atr
+        strong_burst = (bar_change / atr) > 1.35
+        up_bar = close > open_price
+        atr_frac = atr / close
+        volatility_ok = 0.002 <= atr_frac <= 0.03
+
+        if bull_trend and atr_burst and strong_burst and up_bar and volatility_ok:
+            stop = close - self.stop_mult * atr
+            target = close + (2.0 * (close - stop))
+            return BacktestSignal(
+                entry=True,
+                stop_price=stop,
+                take_profit_price=target,
+                reason="TradingView-derived ATR burst setup",
+            )
+
+        return None
+```
+
+### Register The Strategy
+
+Add the strategy to the registry list used by the bot framework:
+
+```python
+STRATEGY_REGISTRY: dict[str, BacktestStrategy] = {
+    strategy.name: strategy
+    for strategy in (
+        ExistingMomentumStrategy(),
+        ATRTrendBurstStrategy(),
+        VWAPReclaimBacktestStrategy(),
+        KCJATRTrendBurstParityStrategy(),
+        CertifiedRiskManagedCompositeStrategy(),
+        TradingViewAtrBurstStrategy(),
+    )
+}
+```
+
+After registration, restart the dashboard/runtime. The strategy should then be available when creating a bot.
+
+### Important Parity Notes
+
+TradingView results may not match exactly unless the assumptions are aligned:
+
+- candle timeframe must match
+- timezone and session filters must match
+- commission and slippage must match
+- order execution timing must match, especially candle-close execution
+- partial exits must be modeled explicitly
+- Binance candle data may differ from TradingView aggregated data
+- testnet execution can differ from historical backtest fills
+
+Treat every converted TradingView strategy as experimental until it passes validation, journaling review, and testnet execution checks.
+
+This project is for educational and testing purposes only. Strategies should not be used for real production trading without independent review, risk validation, and live-market operational testing.
+
 ## Validation And Benchmarks
 
 Run tests:
