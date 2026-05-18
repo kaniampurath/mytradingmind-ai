@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from aegis_trader.runtime.bot_registry import BotRegistry
+from aegis_trader.runtime.headless_service import run_runtime
 from aegis_trader.runtime.runtime_manager import RuntimeManager
 
 
@@ -26,3 +27,12 @@ def test_runtime_state_is_file_persistent() -> None:
     recovered = RuntimeManager(registry=registry, state_path=state_path).list_bot_states()
     assert recovered[0]["bot_id"] == "Runtime_Bot"
     assert recovered[0]["status"] == "RUNNING"
+
+
+def test_headless_runtime_single_cycle_starts_independently() -> None:
+    import asyncio
+
+    asyncio.run(run_runtime("HEADLESS", 0.01, once=True))
+    status = RuntimeManager().runtime_status()
+    assert status["runtime"] == "RUNNING"
+    RuntimeManager().stop_runtime()

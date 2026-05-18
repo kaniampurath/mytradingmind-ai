@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import sys
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -442,6 +444,20 @@ def merge_stream_state(scan: pd.DataFrame, stream: dict[str, object]) -> pd.Data
             f"depth {depth_imbalance:+.2f} | taker buy {taker_buy_ratio:.0%}"
         )
     return normalize_scan_columns(scan)
+
+
+def stream_timeframe_bar_for_bot(bot: pd.Series, stream: dict[str, object]) -> dict[str, object]:
+    symbols = stream.get("symbols")
+    if not isinstance(symbols, dict):
+        return {}
+    payload = symbols.get(str(bot.get("symbol", "")))
+    if not isinstance(payload, dict):
+        return {}
+    timeframes = payload.get("timeframes")
+    if not isinstance(timeframes, dict):
+        return {}
+    bar = timeframes.get(str(bot.get("timeframe", "1h") or "1h"))
+    return bar if isinstance(bar, dict) else {}
 
 
 def default_live_scan_frame() -> pd.DataFrame:
@@ -1788,9 +1804,13 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
         symbol = c3.selectbox("Symbol", symbols)
         capital = c4.number_input("Capital", min_value=0.0, value=250.0, step=50.0)
         selected_strategies = st.multiselect("Strategy collection", available, default=[primary_strategy], help="Bots may carry multiple reusable strategy modules; the primary strategy is used for validation until portfolio execution is expanded.")
-        p1, p2 = st.columns(2)
+        p1, p2, p3 = st.columns(3)
         min_confidence = p1.slider("Min confidence", min_value=0, max_value=100, value=55)
         risk_reward = p2.number_input("Risk reward", min_value=0.1, value=1.7, step=0.1)
+        timeframe_options = ["5m", "1h", "4h", "1d"]
+        strategy_default_timeframe = getattr(STRATEGY_REGISTRY[primary_strategy], "default_timeframe", "1h")
+        timeframe_index = timeframe_options.index(strategy_default_timeframe) if strategy_default_timeframe in timeframe_options else 1
+        timeframe = p3.selectbox("Entry timeframe", timeframe_options, index=timeframe_index)
         if st.form_submit_button("Create bot instance"):
             bots = load_bot_instances()
             strategy_collection = selected_strategies or [primary_strategy]
@@ -1798,7 +1818,7 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
                 "name": name,
                 "strategy": primary_strategy,
                 "symbol": symbol,
-                "timeframe": "1h",
+                "timeframe": timeframe,
                 "capital": capital,
                 "parameters": {"strategies": strategy_collection, "min_confidence": min_confidence, "risk_reward": risk_reward},
                 "state": "DRAFT",
@@ -1830,6 +1850,7 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
     st.caption("Live operational monitoring for deployed bot instances. Creation and strategy configuration remain in Bot Framework.")
     bots = load_bot_instances()
     scan = load_live_scan()
+    stream = load_live_stream()
     if bots.empty:
         st.info("No bot instances exist yet. Create one in Bot Framework.")
         return
@@ -1859,14 +1880,20 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
                     if float(live_mark["last_price"]) <= 0:
                         st.error("Cannot deploy: Binance socket/latest price is not available for this bot symbol.")
                         continue
+                    timeframe_bar = stream_timeframe_bar_for_bot(bot, stream)
+                    if not timeframe_bar:
+                        st.error(f"Cannot deploy: Binance socket has not accumulated a closed {bot.get('timeframe', '1h')} bar for this bot yet.")
+                        continue
                     transition_bot(
                         str(bot["name"]),
                         "RUNNING",
-                        f"deployed and running 24x7 from socket mark ${float(live_mark['last_price']):.6f}",
+                        f"deployed and running 24x7 from {bot.get('timeframe', '1h')} socket bar and mark ${float(live_mark['last_price']):.6f}",
                         {
                             "runtime_entry_price": float(live_mark["last_price"]),
                             "runtime_entry_symbol": str(live_mark["symbol"]),
                             "runtime_entry_source": "binance_socket",
+                            "runtime_entry_timeframe": str(bot.get("timeframe", "1h") or "1h"),
+                            "runtime_entry_bar": timeframe_bar,
                         },
                     )
                     st.success(reason)
@@ -1885,11 +1912,41 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
     manager = RuntimeManager()
     bus = RuntimeCommandBus(manager)
     status = manager.runtime_status()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Runtime", str(status["runtime"]))
     c2.metric("Mode", str(status["runtime_mode"]))
     c3.metric("Running Bots", int(status["running_bots"]))
     c4.metric("LLM", str(status["llm_state"]).replace("_", " "))
+    c5.metric("Heartbeat", stream_age_text(str(status.get("runtime_heartbeat", ""))))
+    with st.expander("Runtime process controls", expanded=True):
+        st.caption("Dashboard and headless runtime are independent. Closing the browser does not stop the runtime process.")
+        st.code(
+            "\n".join(
+                [
+                    "python -m mytradingmind.runtime start --mode headless",
+                    "python scripts/run_headless_runtime.py --mode headless",
+                    "python -m mytradingmind.dashboard start",
+                    "python -m mytradingmind.runtime stop",
+                ]
+            ),
+            language="bash",
+        )
+        r1, r2, r3 = st.columns(3)
+        if r1.button("START HEADLESS RUNTIME", use_container_width=True, disabled=str(status["runtime"]) == "RUNNING"):
+            result = launch_headless_runtime_process()
+            append_journal("runtime", "", "RUNTIME_ADMIN_ACTION", "INFO" if result["ok"] else "ERROR", "START_RUNTIME", str(result["message"]), result)
+            if result["ok"]:
+                st.success(str(result["message"]))
+            else:
+                st.error(str(result["message"]))
+            st.rerun()
+        if r2.button("STOP RUNTIME", use_container_width=True, disabled=str(status["runtime"]) == "STOPPED"):
+            result = bus.dispatch(RuntimeCommand("STOP_RUNTIME", source="BOT_ADMIN"))
+            append_journal("runtime", "", "RUNTIME_ADMIN_ACTION", "INFO" if result.ok else "ERROR", "STOP_RUNTIME", result.message, result.state)
+            st.warning("Runtime stop requested." if result.ok else result.message)
+            st.rerun()
+        if r3.button("REFRESH STATUS", use_container_width=True):
+            st.rerun()
     states = manager.list_bot_states()
     if not states:
         st.info("No bots are configured yet. Create a bot in Bot Framework first.")
@@ -1972,6 +2029,26 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
                         }
                     )
                     st.write(comment)
+
+
+def launch_headless_runtime_process() -> dict[str, object]:
+    try:
+        reports = Path("reports")
+        reports.mkdir(parents=True, exist_ok=True)
+        log_path = reports / "headless_runtime.out.log"
+        with log_path.open("a", encoding="utf-8") as log_file:
+            popen_kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+            subprocess.Popen(
+                [sys.executable, "scripts/run_headless_runtime.py", "--mode", "headless"],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                **popen_kwargs,
+            )
+        RuntimeManager().start_runtime("HEADLESS")
+        return {"ok": True, "message": "Headless runtime process started.", "log_path": str(log_path)}
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 def runtime_tiles(bots: pd.DataFrame, scan: pd.DataFrame, matrix: pd.DataFrame, aggregate: pd.DataFrame) -> None:
@@ -2425,7 +2502,7 @@ def validation_screen() -> None:
     selected_bot = st.selectbox("Bot instance", bot_names or ["No bot instances"])
     c1, c2, c3, c4 = st.columns(4)
     symbol = c1.selectbox("Symbol", load_live_scan()["symbol"].astype(str).tolist() or available_live_symbols())
-    timeframe = c2.selectbox("Timeframe", ["1h", "4h", "1d"])
+    timeframe = c2.selectbox("Timeframe", ["5m", "1h", "4h", "1d"])
     capital = c3.number_input("Capital assumption", min_value=0.0, value=1_000.0, step=100.0)
     fees = c4.number_input("Fees bps", min_value=0.0, value=10.0, step=1.0)
     d1, d2, d3 = st.columns(3)

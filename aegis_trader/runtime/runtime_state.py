@@ -16,6 +16,7 @@ class BotRuntimeState:
     description: str = ""
     strategy: str = ""
     symbol: str = ""
+    timeframe: str = "1h"
     status: str = "STOPPED"
     mode: str = "PAPER"
     runtime_mode: str = "HEADLESS"

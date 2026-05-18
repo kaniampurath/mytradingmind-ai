@@ -11,6 +11,7 @@ from aegis_trader.runtime.runtime_state import BotRuntimeState, RuntimeAuditEven
 
 RUNTIME_STATE_PATH = Path("reports/runtime_state.json")
 RUNTIME_AUDIT_PATH = Path("reports/runtime_audit.json")
+RUNTIME_CONTROL_PATH = Path("reports/runtime_control.json")
 
 
 class RuntimeManager:
@@ -37,6 +38,7 @@ class RuntimeManager:
                     description=str(bot.get("description", "")),
                     strategy=str(bot["strategy"]),
                     symbol=str(bot["symbol"]),
+                    timeframe=str(bot.get("timeframe", "1h") or "1h"),
                     status=self._status_from_bot_state(str(bot["state"])),
                     mode=str(bot.get("mode", "PAPER")),
                     runtime_mode="HEADLESS",
@@ -52,20 +54,38 @@ class RuntimeManager:
 
     def runtime_status(self) -> dict[str, Any]:
         states = self.list_bot_states()
+        control = self._read_runtime_control()
         return {
-            "runtime": "READY",
-            "runtime_mode": "HEADLESS",
+            "runtime": str(control.get("runtime", "STOPPED")),
+            "runtime_mode": str(control.get("runtime_mode", "HEADLESS")),
             "running_bots": sum(1 for row in states if row.get("status") == "RUNNING"),
             "failed_bots": sum(1 for row in states if row.get("status") == "ERROR"),
             "llm_state": self.llm_state(),
+            "runtime_heartbeat": str(control.get("heartbeat_at", "")),
             "updated_at": utc_now_iso(),
         }
 
     def start_runtime(self, mode: str = "HEADLESS") -> dict[str, Any]:
-        return {"runtime": "RUNNING", "runtime_mode": mode.upper(), "updated_at": utc_now_iso()}
+        now = utc_now_iso()
+        state = {"runtime": "RUNNING", "runtime_mode": mode.upper(), "started_at": now, "heartbeat_at": now, "updated_at": now}
+        self._write_runtime_control(state)
+        return state
 
     def stop_runtime(self) -> dict[str, Any]:
-        return {"runtime": "STOPPED", "updated_at": utc_now_iso()}
+        now = utc_now_iso()
+        control = self._read_runtime_control()
+        state = {**control, "runtime": "STOPPED", "heartbeat_at": now, "updated_at": now}
+        self._write_runtime_control(state)
+        return state
+
+    def runtime_heartbeat(self, mode: str = "HEADLESS") -> dict[str, Any]:
+        control = self._read_runtime_control()
+        if str(control.get("runtime", "STOPPED")) != "RUNNING":
+            control = self.start_runtime(mode)
+        now = utc_now_iso()
+        state = {**control, "runtime": "RUNNING", "runtime_mode": mode.upper(), "heartbeat_at": now, "updated_at": now}
+        self._write_runtime_control(state)
+        return state
 
     def start_bot(self, bot_id: str, source: str = "CLI") -> dict[str, Any]:
         return self._transition(bot_id, "RUNNING", "START_BOT", source)
@@ -127,6 +147,19 @@ class RuntimeManager:
             return data if isinstance(data, list) else []
         except json.JSONDecodeError:
             return []
+
+    def _read_runtime_control(self) -> dict[str, Any]:
+        if not RUNTIME_CONTROL_PATH.exists():
+            return {}
+        try:
+            data = json.loads(RUNTIME_CONTROL_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def _write_runtime_control(self, state: dict[str, Any]) -> None:
+        RUNTIME_CONTROL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RUNTIME_CONTROL_PATH.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
 
     def _upsert_state(self, state: dict[str, Any]) -> None:
         rows = self._read_state()

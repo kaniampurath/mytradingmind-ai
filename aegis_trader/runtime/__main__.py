@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 
 from aegis_trader.runtime.command_bus import RuntimeCommand, RuntimeCommandBus
+from aegis_trader.runtime.headless_service import run_runtime
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -11,6 +13,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     start = sub.add_parser("start")
     start.add_argument("--mode", default="headless")
+    start.add_argument("--heartbeat-seconds", type=float, default=5.0)
+    start.add_argument("--once", action="store_true")
     sub.add_parser("stop")
     sub.add_parser("status")
     sub.add_parser("restart")
@@ -22,9 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "start":
+        asyncio.run(run_runtime(str(args.mode).upper(), float(args.heartbeat_seconds), bool(args.once)))
+        return 0
     bus = RuntimeCommandBus()
     action_map = {
-        "start": "START_RUNTIME",
         "stop": "STOP_RUNTIME",
         "status": "STATUS",
         "restart": "START_RUNTIME",
