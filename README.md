@@ -234,13 +234,79 @@ def test_my_new_strategy_is_registered() -> None:
     assert "My New Strategy" in STRATEGY_REGISTRY
 ```
 
-5. Backfill data for the strategy timeframe:
+5. Optional copy-paste example: EMA pullback strategy
 
-```bash
-python scripts/binance_backfill.py --interval 5m --symbols BTC/USDT,ETH/USDT,SOL/USDT
+This is a small educational example that waits for an uptrend, then buys only when price pulls back near EMA20 and closes back above it with volume confirmation.
+
+```python
+class EMAPullbackExampleStrategy(BacktestStrategy):
+    name = "EMA Pullback Example"
+    description = "Educational EMA20 pullback strategy with ATR stop and target."
+    default_timeframe = "15m"
+    max_hold_bars = 32
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        if previous is None:
+            return None
+
+        close = float(row["close"])
+        previous_close = float(previous["close"])
+        ema20 = float(row["ema20"])
+        ema50 = float(row["ema50"])
+        ema200 = float(row["ema200"])
+        atr = float(row["atr14"])
+        rvol = float(row["rvol30"])
+        delta = float(row["delta_ratio"])
+
+        trend_ok = close > ema50 > ema200
+        pullback_reclaim = previous_close < ema20 and close > ema20
+        volume_ok = rvol >= 1.0
+        orderflow_ok = delta > 0
+
+        if trend_ok and pullback_reclaim and volume_ok and orderflow_ok:
+            stop = max(0.000001, close - (1.3 * atr))
+            target = close + (2.1 * (close - stop))
+            return BacktestSignal(
+                entry=True,
+                stop_price=stop,
+                take_profit_price=target,
+                reason="EMA20 pullback reclaim with trend, volume, and delta confirmation",
+            )
+        return None
 ```
 
-6. Run validation:
+Register it:
+
+```python
+STRATEGY_REGISTRY: dict[str, BacktestStrategy] = {
+    strategy.name: strategy
+    for strategy in (
+        ExistingMomentumStrategy(),
+        ATRTrendBurstStrategy(),
+        VWAPReclaimBacktestStrategy(),
+        KCJATRTrendBurstParityStrategy(),
+        CertifiedRiskManagedCompositeStrategy(),
+        EMAPullbackExampleStrategy(),
+    )
+}
+```
+
+Add a test:
+
+```python
+def test_ema_pullback_example_is_registered() -> None:
+    strategy = STRATEGY_REGISTRY["EMA Pullback Example"]
+
+    assert strategy.default_timeframe == "15m"
+```
+
+6. Backfill data for the strategy timeframe:
+
+```bash
+python scripts/binance_backfill.py --interval 15m --symbols BTC/USDT,ETH/USDT,SOL/USDT
+```
+
+7. Run validation:
 
 ```bash
 pytest
@@ -248,7 +314,7 @@ python scripts/validate_build.py --json
 python scripts/production_readiness_stress.py
 ```
 
-7. Open the dashboard and create a bot:
+8. Open the dashboard and create a bot:
 
 ```bash
 python -m mytradingmind.dashboard start
