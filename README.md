@@ -175,6 +175,93 @@ Backfill historical Binance candles:
 python scripts/binance_backfill.py --symbols BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,XRP/USDT,ADA/USDT,DOGE/USDT,LINK/USDT,AVAX/USDT,TRX/USDT
 ```
 
+## Add A New Strategy
+
+Strategies are plugins. They should only produce signals and replay results. They must not call Binance, write directly to the database, bypass risk gates, or place orders.
+
+1. Open the strategy registry file:
+
+```text
+aegis_trader/strategies/backtest_plugins.py
+```
+
+2. Create a new class that extends `BacktestStrategy`:
+
+```python
+class MyNewStrategy(BacktestStrategy):
+    name = "My New Strategy"
+    description = "Plain-English description of the idea."
+    default_timeframe = "5m"  # or 1h, 4h, 1d
+    max_hold_bars = 24
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        if previous is None:
+            return None
+
+        close = float(row["close"])
+        atr = float(row["atr14"])
+
+        if close > float(row["ema20"]) and float(row["rvol30"]) >= 1.0:
+            return BacktestSignal(
+                entry=True,
+                stop_price=max(0.000001, close - (1.2 * atr)),
+                take_profit_price=close + (2.0 * atr),
+                reason="trend and volume confirmation",
+            )
+        return None
+```
+
+3. Register it in `STRATEGY_REGISTRY`:
+
+```python
+STRATEGY_REGISTRY: dict[str, BacktestStrategy] = {
+    strategy.name: strategy
+    for strategy in (
+        ExistingMomentumStrategy(),
+        ATRTrendBurstStrategy(),
+        VWAPReclaimBacktestStrategy(),
+        KCJATRTrendBurstParityStrategy(),
+        CertifiedRiskManagedCompositeStrategy(),
+        MyNewStrategy(),
+    )
+}
+```
+
+4. Add a focused test under `tests/backtest/`:
+
+```python
+def test_my_new_strategy_is_registered() -> None:
+    assert "My New Strategy" in STRATEGY_REGISTRY
+```
+
+5. Backfill data for the strategy timeframe:
+
+```bash
+python scripts/binance_backfill.py --interval 5m --symbols BTC/USDT,ETH/USDT,SOL/USDT
+```
+
+6. Run validation:
+
+```bash
+pytest
+python scripts/validate_build.py --json
+python scripts/production_readiness_stress.py
+```
+
+7. Open the dashboard and create a bot:
+
+```bash
+python -m mytradingmind.dashboard start
+```
+
+Then use:
+
+- **Bot Framework** to create a bot with the new strategy
+- **Validation Lab** to backtest it
+- **Bot Runtime** / **Bot Admin** to monitor or control it
+
+New strategies should be considered experimental until they pass backtesting, stress testing, journal review, and risk certification.
+
 ## Validation And Benchmarks
 
 Run tests:
