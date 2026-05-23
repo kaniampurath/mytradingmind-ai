@@ -26,9 +26,6 @@ async def run_runtime(mode: str, heartbeat_seconds: float, once: bool = False) -
         if str(manager.runtime_status().get("runtime", "STOPPED")) == "STOPPED":
             break
         manager.runtime_heartbeat(mode)
-        for state in manager.list_bot_states():
-            if state.get("status") == "RUNNING":
-                manager.start_bot(str(state["bot_id"]), source="HEADLESS_HEARTBEAT")
         if once:
             break
         try:

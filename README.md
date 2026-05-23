@@ -4,6 +4,20 @@ mytradingmind.ai is an educational, testnet-first crypto trading operations plat
 
 > Educational use only. This project is not financial advice. Do not use the included strategies for real-money production trading. Strategies must be independently reviewed, tested, risk-approved, and legally/commercially assessed before any live deployment.
 
+## Releases
+
+- `v1.0`: baseline app release preserved from the original `main` branch before the Bot Operations Platform upgrade.
+- `v1.2`: current main release with Bot Management, runtime cockpit, Trade Management, journal analysis, headless runtime scripts, and Ubuntu database bootstrap.
+
+Use either release independently:
+
+```bash
+git clone https://github.com/kaniampurath/mytradingmind-ai.git
+cd mytradingmind-ai
+git checkout v1.0   # baseline
+git checkout v1.2   # current main release
+```
+
 ## What It Does
 
 - Watches Binance Spot Testnet market data
@@ -36,15 +50,18 @@ Detailed notes: [Architecture Overview](docs/ARCHITECTURE.md)
 ## Screens
 
 - Dashboard
-- Live Trading
+- Bot Management
+  - Bot Framework
+  - Bot Runtime
+  - Bot Admin
+  - Validation Lab
+- Trade Management
 - Order Flow
 - Risk
-- Bot Framework
-- Bot Runtime
-- Bot Admin
 - System Health
 - Journal
-- Validation Lab
+
+Live Trading and SignalFlow are now dashboard panels rather than standalone navigation screens.
 
 ## Safety First
 
@@ -114,7 +131,7 @@ nano .env
 
 mkdir -p data reports logs backups
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mariadb redis
-docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/init_db.py
+docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/init_db.py --print-tables
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mytradingmind_runtime mytradingmind_dashboard scanner
 ```
 
@@ -125,6 +142,8 @@ http://YOUR_DROPLET_IP:8501
 ```
 
 Full guide: [Ubuntu Droplet Deployment](docs/UBUNTU_DROPLET_DEPLOYMENT.md)
+
+Release notes and rollback guidance: [Releases](docs/RELEASES.md)
 
 ## Runtime Commands
 
@@ -138,6 +157,15 @@ Headless runtime only:
 
 ```bash
 python -m mytradingmind.runtime start --mode headless
+```
+
+Ubuntu helper scripts:
+
+```bash
+sh scripts/create_ubuntu_database.sh
+sh scripts/runtime_start.sh
+sh scripts/runtime_monitor.sh --once
+sh scripts/runtime_stop.sh
 ```
 
 Runtime status:

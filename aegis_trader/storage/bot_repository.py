@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,6 +109,14 @@ async def read_bot_instances(session: AsyncSession) -> pd.DataFrame:
     rows = result.scalars().all()
     logger.info("bot_instances_read count=%s", len(rows))
     return pd.DataFrame([_bot_row(row) for row in rows])
+
+
+async def delete_bot_instance(session: AsyncSession, name: str) -> int:
+    result = await session.execute(delete(BotInstanceRow).where(BotInstanceRow.name == name))
+    await session.commit()
+    deleted = int(result.rowcount or 0)
+    logger.info("bot_instance_deleted name=%s rows=%s", name, deleted)
+    return deleted
 
 
 async def append_journal_event(session: AsyncSession, event: dict[str, Any]) -> None:

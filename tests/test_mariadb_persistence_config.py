@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 
 from aegis_trader.core.config import settings
@@ -26,3 +28,11 @@ def test_repository_payload_cleaning_removes_dataframe_nulls() -> None:
     payload = _clean_dict({"deployed_at": pd.NaT, "capital": float("nan"), "name": "bot"})
 
     assert payload == {"deployed_at": None, "capital": None, "name": "bot"}
+
+
+def test_bot_repository_exposes_delete_bot_instance() -> None:
+    text = Path("aegis_trader/storage/bot_repository.py").read_text(encoding="utf-8")
+
+    assert "async def delete_bot_instance" in text
+    assert "delete(BotInstanceRow)" in text
+    assert "BotInstanceRow.name == name" in text

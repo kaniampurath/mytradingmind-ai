@@ -29,6 +29,37 @@ def test_runtime_state_is_file_persistent() -> None:
     assert recovered[0]["status"] == "RUNNING"
 
 
+def test_bot_registry_merge_prefers_fresh_persistent_state() -> None:
+    older = pd.DataFrame(
+        [
+            {
+                "name": "Runtime Bot",
+                "bot_id": "Runtime_Bot",
+                "strategy": "ATR Trend Burst",
+                "symbol": "ETH/USDT",
+                "state": "BACKTESTED",
+                "updated_at": "2026-05-22T00:00:00+00:00",
+            }
+        ]
+    )
+    fresher = pd.DataFrame(
+        [
+            {
+                "name": "Runtime Bot",
+                "bot_id": "Runtime_Bot",
+                "strategy": "ATR Trend Burst",
+                "symbol": "ETH/USDT",
+                "state": "RUNNING",
+                "updated_at": "2026-05-23T00:00:00+00:00",
+            }
+        ]
+    )
+
+    merged = BotRegistry.merge(older, fresher)
+
+    assert merged.iloc[0]["state"] == "RUNNING"
+
+
 def test_headless_runtime_single_cycle_starts_independently() -> None:
     import asyncio
 

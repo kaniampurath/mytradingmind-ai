@@ -93,7 +93,9 @@ class BotRegistry:
         if not frames:
             return pd.DataFrame()
         merged = BotRegistry._normalize(pd.concat(frames, ignore_index=True))
-        return merged.drop_duplicates(subset=["bot_id"], keep="first").reset_index(drop=True)
+        merged["_freshness"] = BotRegistry._freshness_series(merged)
+        merged = merged.sort_values(["bot_id", "_freshness"], ascending=[True, False])
+        return merged.drop_duplicates(subset=["bot_id"], keep="first").drop(columns=["_freshness"]).reset_index(drop=True)
 
     def _load_file_rows(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -133,3 +135,16 @@ class BotRegistry:
         frame["description"] = frame["description"].fillna("").astype(str)
         frame["mode"] = frame["mode"].fillna("PAPER").astype(str)
         return frame
+
+    @staticmethod
+    def _freshness_series(frame: pd.DataFrame) -> pd.Series:
+        timestamps = []
+        for column in ["updated_at", "heartbeat_at", "deployed_at", "created_at"]:
+            if column in frame:
+                timestamps.append(pd.to_datetime(frame[column], errors="coerce", utc=True))
+        if not timestamps:
+            return pd.Series(pd.Timestamp(0, tz="UTC"), index=frame.index)
+        freshness = timestamps[0]
+        for timestamp in timestamps[1:]:
+            freshness = freshness.where(freshness.notna() & ((timestamp.isna()) | (freshness >= timestamp)), timestamp)
+        return freshness.fillna(pd.Timestamp(0, tz="UTC"))

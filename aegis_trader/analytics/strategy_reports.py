@@ -35,7 +35,12 @@ def run_strategy_matrix(
 def aggregate_strategy_matrix(matrix: pd.DataFrame) -> pd.DataFrame:
     if matrix.empty:
         return pd.DataFrame()
-    grouped = matrix.groupby("strategy", as_index=False).agg(
+    working = matrix.copy()
+    if "profit_factor" in working:
+        working["profit_factor_rank"] = pd.to_numeric(working["profit_factor"], errors="coerce").replace([float("inf"), -float("inf")], pd.NA).fillna(0.0).clip(0, 10)
+    else:
+        working["profit_factor_rank"] = 0.0
+    grouped = working.groupby("strategy", as_index=False).agg(
         symbols=("symbol", "count"),
         trades=("trades", "sum"),
         wins=("wins", "sum"),
@@ -45,6 +50,7 @@ def aggregate_strategy_matrix(matrix: pd.DataFrame) -> pd.DataFrame:
         max_drawdown_pct=("max_drawdown_pct", "max"),
         avg_trade_return_pct=("avg_trade_return_pct", "mean"),
         sharpe_proxy=("sharpe_proxy", "mean"),
+        avg_profit_factor=("profit_factor_rank", "mean"),
         confidence_score=("confidence_score", "mean"),
     )
     grouped["win_rate"] = grouped.apply(lambda row: 0.0 if row["trades"] <= 0 else row["wins"] / row["trades"] * 100, axis=1)

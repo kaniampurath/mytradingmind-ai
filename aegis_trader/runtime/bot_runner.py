@@ -15,5 +15,5 @@ class HeadlessBotRunner:
         manager = RuntimeManager()
         manager.start_bot(self.bot_id, source="HEADLESS")
         while True:
-            manager.start_bot(self.bot_id, source="HEARTBEAT")
+            manager.runtime_heartbeat("HEADLESS")
             await asyncio.sleep(self.heartbeat_seconds)

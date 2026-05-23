@@ -14,6 +14,7 @@ This project is suitable for paper/testnet operation and continued production ha
 | Dashboard | Pass for operations | Crypto-neutral symbol selection, live buckets, bot tiles, risk, journal, validation, and system health. |
 | Binance testnet | Conditional | Testnet endpoints and scanner are wired; exchange credential probe is available. |
 | Replay/backtest | Conditional | One-year feature files drive validation; direct exchange-quality replay metrics should expand before live trading. |
+| Strategy drawdown locks | Pass for replay certification | Strategy replay modules stop opening new trades after module drawdown breaches the runtime lock threshold. |
 | Real-money live trading | Not certified | Live mode must remain disabled until order protection, reconciliation, and kill-switch drills pass on a droplet. |
 
 ## Mandatory Live-Mode Gates
@@ -35,6 +36,7 @@ Do not enable `AEGIS_MODE=LIVE_MODE` until all are true:
 - Keep `AEGIS_BINANCE_TESTNET=true` until testnet certification is complete.
 - Review `logs/mytradingmind.log` daily for `fallback`, `risk_gate_block`, `database_*_failed`, and `journal_database_save_failed`.
 - Check System Health for database, websocket, bot heartbeat, failed bots, errors, and retries.
+- Treat new research strategies as experimental until production stress confirms module drawdown stays inside the configured lock threshold.
 - Back up MariaDB before code updates.
 - Restart services after deployment and verify dashboard HTTP 200 plus a fresh app log entry.
 

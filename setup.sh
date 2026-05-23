@@ -24,5 +24,5 @@ fi
 
 echo "Next commands:"
 echo "  docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mariadb redis"
-echo "  docker compose -f deploy/docker-compose.yml --env-file .env run --rm dashboard python scripts/init_db.py"
-echo "  docker compose -f deploy/docker-compose.yml --env-file .env up -d --build dashboard scanner"
+echo "  docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/init_db.py --print-tables"
+echo "  docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mytradingmind_runtime mytradingmind_dashboard scanner"

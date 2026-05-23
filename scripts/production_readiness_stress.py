@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
 from dataclasses import asdict
 from pathlib import Path
 from statistics import mean
 
 from aegis_trader.analytics.strategy_reports import aggregate_strategy_matrix, run_strategy_matrix
-from aegis_trader.strategies.backtest_plugins import STRATEGY_REGISTRY
+from aegis_trader.strategies.backtest_plugins import STRATEGY_REGISTRY, active_strategy_names
 
 
 STRESS_SCENARIOS = {
@@ -18,10 +19,19 @@ STRESS_SCENARIOS = {
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run production readiness stress scenarios for selected strategy plugins.")
+    parser.add_argument("--strategy-set", choices=["active", "all"], default="active")
+    parser.add_argument("--strategies", default="", help="Comma-separated strategy names. Overrides --strategy-set.")
+    parser.add_argument("--days", type=int, default=365)
+    parser.add_argument("--interval", default="1h")
+    args = parser.parse_args()
+
     out_dir = Path("reports")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    matrix = run_strategy_matrix(list(STRATEGY_REGISTRY), days=365)
+    effective_strategy_set = "custom" if args.strategies.strip() else args.strategy_set
+    strategy_names = select_strategy_names(args.strategy_set, args.strategies)
+    matrix = run_strategy_matrix(strategy_names, days=args.days, interval=args.interval)
     aggregate = aggregate_strategy_matrix(matrix)
     if matrix.empty or aggregate.empty:
         result = {
@@ -32,7 +42,17 @@ def main() -> None:
         print(json.dumps(result, indent=2))
         raise SystemExit(1)
 
-    scenarios = [_scenario_report(name, cfg, aggregate) for name, cfg in STRESS_SCENARIOS.items()]
+    scoreable = aggregate[aggregate["trades"] > 0].copy()
+    if scoreable.empty:
+        result = {
+            "status": "FAIL",
+            "score": 0,
+            "reason": "No registered strategies generated trades for stress testing.",
+        }
+        print(json.dumps(result, indent=2))
+        raise SystemExit(1)
+
+    scenarios = [_scenario_report(name, cfg, scoreable) for name, cfg in STRESS_SCENARIOS.items()]
     hard_failures = [
         item
         for item in scenarios
@@ -43,14 +63,39 @@ def main() -> None:
     result = {
         "status": status,
         "score": score,
-        "strategies_tested": int(aggregate["strategy"].nunique()),
+        "strategies_tested": int(scoreable["strategy"].nunique()),
+        "strategies_observed": int(aggregate["strategy"].nunique()),
+        "strategy_set": effective_strategy_set,
+        "strategies": strategy_names,
+        "days": args.days,
+        "interval": args.interval,
+        "strategies_excluded_no_trades": sorted(str(item) for item in aggregate.loc[aggregate["trades"] <= 0, "strategy"].tolist()),
         "scenario_count": len(scenarios),
         "scenarios": scenarios,
         "remediation": _remediation(hard_failures),
     }
-    (out_dir / "production_readiness_stress.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    report_name = "production_readiness_stress.json" if effective_strategy_set == "active" else "production_readiness_stress_custom.json"
+    (out_dir / report_name).write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
     raise SystemExit(0 if status in {"PASS", "WARN"} else 1)
+
+
+def select_strategy_names(strategy_set: str, strategy_names: str = "") -> list[str]:
+    if strategy_names.strip():
+        requested = [item.strip() for item in strategy_names.split(",") if item.strip()]
+    elif strategy_set == "active":
+        requested = active_strategy_names()
+    elif strategy_set == "all":
+        requested = list(STRATEGY_REGISTRY)
+    else:
+        raise ValueError(f"unsupported strategy set: {strategy_set}")
+
+    missing = [name for name in requested if name not in STRATEGY_REGISTRY]
+    if missing:
+        raise ValueError("unknown strategy names: " + ", ".join(missing))
+    if not requested:
+        raise ValueError("no strategies selected for production readiness stress")
+    return requested
 
 
 def _scenario_report(name: str, config: dict[str, float], aggregate) -> dict[str, float | str | int]:
