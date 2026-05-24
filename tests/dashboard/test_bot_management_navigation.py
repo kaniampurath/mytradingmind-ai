@@ -61,11 +61,27 @@ def test_bot_management_uses_drill_down_controls_not_radio_selector() -> None:
 def test_dashboard_is_global_visibility_center_and_sidebar_has_no_navigation_caption() -> None:
     text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
     dashboard_body = text[text.index("def dashboard_screen") : text.index("def strategy_backtest_ranking")]
-    sidebar_body = text[text.index("with st.sidebar:") : text.index("log_diagnostic")]
+    banner_body = text[text.index("def app_banner") : text.index("def public_login_landing")]
+    sidebar_body = text[text.index("with st.sidebar:") : text.index("app_banner()", text.index("with st.sidebar:"))]
 
-    assert "# mytradingmind.ai" in dashboard_body
-    assert "Global trading operations dashboard" in dashboard_body
+    assert "mytradingmind.ai" in banner_body
+    assert "Global trading operations dashboard" in banner_body
+    assert "app-emblem" in banner_body
     assert "Live Trading" in dashboard_body
-    assert "SignalFlow" in dashboard_body
+    assert "Signal Flow" in dashboard_body
     assert "Risk Exposure Summary" in dashboard_body
     assert 'st.caption("Navigation")' not in sidebar_body
+
+
+def test_sidebar_is_forced_visible_for_authenticated_navigation() -> None:
+    text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
+    css_body = text[text.index("CSS = ") : text.index("st.markdown(CSS")]
+    sidebar_body = text[text.index("with st.sidebar:") : text.index("app_banner()", text.index("with st.sidebar:"))]
+
+    assert 'section[data-testid="stSidebar"][aria-expanded="false"]' in css_body
+    assert "transform: translateX(0) !important" in css_body
+    assert "visibility: visible !important" in css_body
+    assert "z-index: 999980" in css_body
+    assert "sidebar-panel-title\">Operations" in sidebar_body
+    assert "Signed in:" in sidebar_body
+    assert "allowed_screen_options_for_context(context)" in sidebar_body

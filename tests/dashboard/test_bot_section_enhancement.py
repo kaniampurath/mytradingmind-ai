@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
+from aegis_trader.dashboards.app import runtime_trade_position_status
+
 
 def test_bot_framework_exposes_creation_defaults_and_persists_overrides() -> None:
     text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
@@ -26,6 +30,11 @@ def test_runtime_profile_contains_required_instance_level_metrics() -> None:
         "strategy_type",
         "bot_version",
         "runtime_status",
+        "trade_position_state",
+        "trade_position_reason",
+        "in_trade",
+        "last_entry_at",
+        "last_exit_at",
         "validation_status",
         "deployment_timestamp",
         "runtime_duration_hours",
@@ -76,3 +85,72 @@ def test_runtime_tiles_have_readable_boundaries_and_nan_safe_formatting() -> Non
     assert "def pct_text" in text
     assert 'return "$0.00"' in text
     assert "price unavailable" in text
+    assert "IN_TRADE" in text
+    assert "OUT_OF_TRADE" in text
+    assert "trade_state_class" in text
+    assert "class=\"pill {trade_state_class}\"" in text
+    assert "class='pill {'" not in text
+    assert "Trade state:" in text
+    assert "In/out of trade" in text
+
+
+def test_runtime_screen_merges_persisted_trade_state_after_ui_restart() -> None:
+    text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
+    runtime_body = text[text.index("def bot_runtime_screen") : text.index("def bot_admin_screen")]
+
+    assert "RuntimeManager().list_bot_states()" in runtime_body
+    assert '"runtime_position_state"' in runtime_body
+    assert '"last_entry_at"' in runtime_body
+    assert '"last_exit_at"' in runtime_body
+    assert '"last_trade_event_type"' in runtime_body
+    assert '"last_trade_event_at"' in runtime_body
+    assert '"last_trade_event_reason"' in runtime_body
+
+
+def test_runtime_trade_position_status_shows_out_of_trade_after_exit_signal() -> None:
+    bot = {"bot_id": "bot-1", "name": "Runtime Bot", "state": "RUNNING", "parameters": {}}
+    events = pd.DataFrame(
+        [
+            {
+                "bot_id": "bot-1",
+                "event_type": "TradeEntered",
+                "event_time": "2026-05-24T08:00:00+00:00",
+                "position_state": "OPEN",
+                "lifecycle_state": "Active",
+            },
+            {
+                "bot_id": "bot-1",
+                "event_type": "TradeExited",
+                "event_time": "2026-05-24T09:00:00+00:00",
+                "position_state": "FLAT",
+                "lifecycle_state": "Closed",
+            },
+        ]
+    )
+
+    status = runtime_trade_position_status(bot, events)
+
+    assert status["trade_position_state"] == "OUT_OF_TRADE"
+    assert status["in_trade"] is False
+    assert "exit signal recorded" in status["trade_position_reason"]
+    assert str(status["last_exit_at"]).startswith("2026-05-24T09:00:00")
+
+
+def test_runtime_trade_position_status_shows_in_trade_without_exit_signal() -> None:
+    bot = {"bot_id": "bot-1", "name": "Runtime Bot", "state": "RUNNING", "parameters": {}}
+    events = pd.DataFrame(
+        [
+            {
+                "bot_id": "bot-1",
+                "event_type": "TradeEntered",
+                "event_time": "2026-05-24T08:00:00+00:00",
+                "position_state": "OPEN",
+                "lifecycle_state": "Active",
+            }
+        ]
+    )
+
+    status = runtime_trade_position_status(bot, events)
+
+    assert status["trade_position_state"] == "IN_TRADE"
+    assert status["in_trade"] is True

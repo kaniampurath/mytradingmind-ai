@@ -5,7 +5,9 @@ import logging
 import os
 import subprocess
 import sys
-from dataclasses import asdict
+import html
+import hashlib
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -35,6 +37,16 @@ from aegis_trader.runtime.runtime_manager import (
     RUNTIME_TRADE_PNL_SNAPSHOTS_PATH,
     RuntimeManager,
 )
+from aegis_trader.security.auth import (
+    can_access_screen,
+    create_password_reset,
+    login_user,
+    logout_session,
+    register_user,
+    security_schema_summary,
+    set_user_password,
+    verify_password,
+)
 from aegis_trader.storage.bot_repository import (
     DEFAULT_RISK_SETTINGS,
     append_journal_event,
@@ -42,6 +54,7 @@ from aegis_trader.storage.bot_repository import (
     read_bot_instances,
     read_journal_events,
     read_risk_settings,
+    read_runtime_events,
     read_validation_runs,
     upsert_bot_instance,
     upsert_risk_settings,
@@ -98,12 +111,30 @@ def deployable_strategy_symbol_rows() -> list[dict[str, str]]:
 from aegis_trader.testing.certification import CertificationEngine, CertificationMetrics
 
 
-st.set_page_config(page_title="mytradingmind.ai Ops", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="mytradingmind.ai Ops", layout="wide", initial_sidebar_state="expanded")
 LOG_PATH = configure_logging()
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_LIVE_SYMBOLS: tuple[str, ...] = tuple(settings.symbols)
+INSTITUTIONAL_BOT_CAGR_SOURCES = [
+    {
+        "source": "Barclay BTOP50 managed-futures index",
+        "cagr_pct": 7.50,
+        "url": "https://www.globalcustodian.com/managed-futures-gained-5-83-in-2006-says-barclay-btop50-index/",
+    },
+    {
+        "source": "BTOP50 long-run managed-futures reference",
+        "cagr_pct": 7.57,
+        "url": "https://detalus.com/wp-content/uploads/2017/07/Managed-Futures-Detalus-Advisors.pdf",
+    },
+    {
+        "source": "Simplify CTA managed-futures ETF institutional comparison",
+        "cagr_pct": 11.01,
+        "url": "https://www.simplify.us/sites/default/files/fund-insights/2026-03/Simplify-FI-CTA-Four-Years-In.pdf",
+    },
+]
+INSTITUTIONAL_BOT_CAGR_MAX_PCT = round(float(np.mean([row["cagr_pct"] for row in INSTITUTIONAL_BOT_CAGR_SOURCES])), 2)
 DEPLOYED_STRATEGIES_PATH = Path("reports/deployed_strategies.json")
 BOT_INSTANCES_PATH = Path("reports/bot_instances.json")
 RISK_SETTINGS_PATH = Path("reports/risk_settings.json")
@@ -177,37 +208,314 @@ CSS = """
   transition: none !important;
   animation: none !important;
 }
-div[data-testid="stSidebar"] {
+section[data-testid="stSidebar"] {
+  width: 218px !important;
+  min-width: 218px !important;
+  max-width: 218px !important;
+  margin-top: 76px !important;
+  height: calc(100vh - 76px) !important;
+  transform: translateX(0) !important;
+  visibility: visible !important;
+  display: block !important;
+  left: 0 !important;
+  z-index: 999980 !important;
+}
+section[data-testid="stSidebar"] > div {
+  width: 218px !important;
+  min-width: 218px !important;
+  max-width: 218px !important;
+  height: calc(100vh - 76px) !important;
+  transform: translateX(0) !important;
+  visibility: visible !important;
+  display: block !important;
+}
+section[data-testid="stSidebar"][aria-expanded="false"],
+section[data-testid="stSidebar"][aria-expanded="false"] > div,
+section[data-testid="stSidebar"][data-expanded="false"],
+section[data-testid="stSidebar"][data-expanded="false"] > div {
+  width: 218px !important;
+  min-width: 218px !important;
+  max-width: 218px !important;
+  margin-left: 0 !important;
+  transform: translateX(0) !important;
+  visibility: visible !important;
+  display: block !important;
+}
+button[kind="header"],
+[data-testid="collapsedControl"] {
+  display: none !important;
+}
+div[data-testid="stSidebar"],
+div[data-testid="stSidebarContent"] {
   background: #0d1216;
-  border-right: 1px solid var(--line);
+  border-right: 1px solid rgba(121, 167, 255, 0.32);
+  width: 218px !important;
+  min-width: 218px !important;
+  max-width: 218px !important;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.18);
+}
+div[data-testid="stSidebar"] > div,
+div[data-testid="stSidebarContent"] > div {
+  padding: 0.5rem 0.52rem 0.85rem !important;
+}
+div[data-testid="stSidebar"] h1,
+div[data-testid="stSidebar"] h2,
+div[data-testid="stSidebar"] h3,
+div[data-testid="stSidebarContent"] h1,
+div[data-testid="stSidebarContent"] h2,
+div[data-testid="stSidebarContent"] h3 {
+  font-size: 0.94rem !important;
+  margin-bottom: 0.08rem !important;
+}
+div[data-testid="stSidebar"] p,
+div[data-testid="stSidebar"] label,
+div[data-testid="stSidebar"] .stCaptionContainer,
+div[data-testid="stSidebarContent"] p,
+div[data-testid="stSidebarContent"] label,
+div[data-testid="stSidebarContent"] .stCaptionContainer {
+  font-size: 0.74rem !important;
+}
+div[data-testid="stSidebar"] button,
+div[data-testid="stSidebarContent"] button {
+  min-height: 1.85rem !important;
+  padding: 0.16rem 0.36rem !important;
+  font-size: 0.78rem !important;
+}
+div[data-testid="stSidebar"] input,
+div[data-testid="stSidebarContent"] input {
+  min-height: 1.85rem !important;
+  font-size: 0.78rem !important;
+}
+div[data-testid="stSidebar"] [data-testid="stExpander"],
+div[data-testid="stSidebarContent"] [data-testid="stExpander"] {
+  border-radius: 8px !important;
+}
+div[data-testid="stSidebar"] [data-testid="stVerticalBlock"],
+div[data-testid="stSidebarContent"] [data-testid="stVerticalBlock"] {
+  gap: 0.25rem !important;
 }
 .block-container {
-  padding-top: 1.15rem;
+  padding-top: 5.65rem;
   padding-bottom: 2rem;
 }
 h1, h2, h3 {
   letter-spacing: 0;
 }
 h1 {
-  font-size: 1.75rem;
+  font-size: 1.55rem;
   margin-bottom: 0.1rem;
 }
 .subtle {
   color: var(--muted);
   font-size: 0.9rem;
 }
+.app-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999990;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  min-height: 76px;
+  border-bottom: 1px solid rgba(121, 167, 255, 0.3);
+  background:
+    linear-gradient(90deg, rgba(13, 18, 22, 0.98), rgba(19, 31, 39, 0.98) 52%, rgba(13, 18, 22, 0.98)),
+    radial-gradient(circle at 14% 0%, rgba(121, 167, 255, 0.22), transparent 34%);
+  padding: 0.72rem 1.05rem;
+  margin: 0;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+.app-emblem {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #79a7ff, #55d49a);
+  color: #071116;
+  font-weight: 950;
+  font-size: 1.02rem;
+  border: 1px solid rgba(255,255,255,0.22);
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 4px rgba(121, 167, 255, 0.08), 0 12px 28px rgba(85, 212, 154, 0.16);
+  cursor: pointer;
+}
+.app-home-link,
+.app-home-link:visited,
+.app-home-link:hover,
+.app-home-link:active {
+  text-decoration: none;
+  color: inherit;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.app-title {
+  color: var(--ink);
+  font-weight: 900;
+  font-size: 1.34rem;
+  line-height: 1.1;
+}
+.app-subtitle {
+  color: #b8c8d2;
+  font-size: 0.9rem;
+  line-height: 1.32;
+  margin-top: 0.16rem;
+  max-width: 980px;
+}
+@media (max-width: 900px) {
+  .app-banner {
+    min-height: 86px;
+    padding: 0.68rem 0.8rem;
+  }
+  .app-emblem {
+    width: 46px;
+    height: 46px;
+  }
+  .app-title {
+    font-size: 1.12rem;
+  }
+  .app-subtitle {
+    font-size: 0.78rem;
+  }
+  .block-container {
+    padding-top: 6.15rem;
+  }
+  section[data-testid="stSidebar"],
+  section[data-testid="stSidebar"] > div {
+    margin-top: 86px !important;
+    height: calc(100vh - 86px) !important;
+  }
+}
+.public-hero {
+  border: 1px solid rgba(121, 167, 255, 0.26);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(21, 28, 34, 0.98), rgba(16, 24, 28, 0.92));
+  padding: 1.2rem 1.35rem;
+  margin: 0.4rem 0 1rem;
+}
+.public-hero h1 {
+  font-size: 1.65rem;
+  line-height: 1.08;
+  margin: 0 0 0.55rem;
+}
+.public-hero p {
+  color: #cbd5dc;
+  font-size: 1rem;
+  line-height: 1.48;
+  max-width: 840px;
+  margin: 0;
+}
+.public-proof-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0.9rem 0 1rem;
+}
+.public-proof {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 0.75rem 0.85rem;
+  min-height: 90px;
+}
+.public-proof b {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.public-proof span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+.auth-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 0.75rem 0.85rem;
+  margin: 0.75rem 0 0.85rem;
+}
+.auth-card h3 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+.auth-inline {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1.2fr) 140px 150px;
+  gap: 0.55rem;
+  align-items: end;
+}
+.auth-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+@media (max-width: 1000px) {
+  .auth-inline {
+    grid-template-columns: 1fr;
+  }
+}
+.account-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(21, 28, 34, 0.78);
+  padding: 0.55rem 0.72rem;
+  margin: 0 0 0.7rem;
+}
+.account-left {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+.user-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #061016;
+  font-weight: 900;
+  font-size: 0.9rem;
+  border: 1px solid rgba(255,255,255,0.22);
+}
+.account-name {
+  color: var(--ink);
+  font-weight: 800;
+  line-height: 1.15;
+}
+.account-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 0.1rem;
+}
+@media (max-width: 900px) {
+  .public-proof-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .account-strip {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
 .status-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
   gap: 0.65rem;
-  margin: 0.75rem 0 1rem;
+  margin: 0.65rem 0 0.72rem;
 }
 .status-card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.72rem 0.82rem;
-  min-height: 82px;
+  padding: 0.58rem 0.72rem;
+  min-height: 64px;
 }
 .status-label {
   color: var(--muted);
@@ -216,9 +524,10 @@ h1 {
   letter-spacing: 0.04em;
 }
 .status-value {
-  font-size: 1.18rem;
+  font-size: 1.02rem;
   font-weight: 700;
   margin-top: 0.2rem;
+  overflow-wrap: anywhere;
 }
 .pill {
   display: inline-flex;
@@ -401,6 +710,303 @@ h1 {
   font-size: 0.82rem;
   margin: 0.45rem 0 0.25rem;
 }
+.diagnostic-strip {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0.35rem 0 0.5rem;
+}
+.decision-summary {
+  border: 1px solid rgba(121, 167, 255, 0.28);
+  border-left: 5px solid var(--info);
+  border-radius: 8px;
+  padding: 0.72rem 0.85rem;
+  background: rgba(17, 24, 32, 0.62);
+  margin: 0.65rem 0 0.85rem;
+}
+.decision-summary.warn { border-left-color: var(--warn); }
+.decision-summary.bad { border-left-color: var(--bad); }
+.decision-summary.good { border-left-color: var(--good); }
+.decision-summary-title {
+  font-weight: 820;
+  margin-bottom: 0.18rem;
+}
+.metric-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0 1.1rem;
+}
+.metric-tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem;
+}
+.metric-tile .label {
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+.metric-tile .value {
+  font-size: 1.55rem;
+  font-weight: 840;
+  margin-top: 0.2rem;
+}
+.metric-tile .sub {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 0.18rem;
+}
+.runtime-tile-zone {
+  border: 1px solid rgba(148, 163, 173, 0.2);
+  border-radius: 8px;
+  padding: 0.7rem;
+  margin-top: 0.65rem;
+  background: rgba(13, 18, 22, 0.45);
+}
+.runtime-tile-zone-title {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  margin-bottom: 0.45rem;
+}
+.journal-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 0.75rem 0 1rem;
+}
+.journal-card {
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--info);
+  border-radius: 8px;
+  background: rgba(17, 24, 32, 0.58);
+  padding: 0.85rem;
+}
+.journal-card.good { border-left-color: var(--good); }
+.journal-card.warn { border-left-color: var(--warn); }
+.journal-card.bad { border-left-color: var(--bad); }
+.journal-card-title {
+  font-weight: 840;
+  margin-bottom: 0.2rem;
+}
+.journal-visual-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0.7rem 0 0.55rem;
+}
+.journal-mini-metric {
+  border: 1px solid rgba(148, 163, 173, 0.2);
+  border-radius: 8px;
+  background: rgba(13, 18, 22, 0.54);
+  padding: 0.58rem 0.62rem;
+}
+.journal-mini-metric .label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+.journal-mini-metric .value {
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 900;
+  margin-top: 0.12rem;
+}
+.journal-scorebar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 173, 0.16);
+  overflow: hidden;
+  margin-top: 0.6rem;
+}
+.journal-scorebar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--bad), var(--warn), var(--good));
+}
+.journal-action-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.48rem;
+  border: 1px solid rgba(148, 163, 173, 0.24);
+  color: var(--ink);
+  font-size: 0.72rem;
+  margin-top: 0.42rem;
+  background: rgba(13, 18, 22, 0.5);
+}
+.journal-card-section {
+  margin-top: 0.52rem;
+}
+.journal-card-section b {
+  color: var(--muted);
+}
+.bot-meter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 0.75rem 0 0.9rem;
+}
+.bot-meter-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(17, 24, 32, 0.72);
+  padding: 0.82rem;
+}
+.bot-meter-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.55rem;
+}
+.bot-meter-title {
+  color: var(--ink);
+  font-weight: 840;
+  overflow-wrap: anywhere;
+}
+.bot-meter-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-top: 0.12rem;
+}
+.bot-meter-value {
+  font-size: 1.15rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.bot-analog-meter {
+  position: relative;
+  width: min(260px, 100%);
+  aspect-ratio: 2 / 1;
+  margin: 0.72rem auto 0.15rem;
+  overflow: hidden;
+}
+.bot-analog-arc {
+  position: absolute;
+  inset: 0;
+  border-radius: 260px 260px 0 0;
+  background:
+    conic-gradient(from 270deg at 50% 100%, var(--bad) 0deg 45deg, var(--warn) 45deg 135deg, var(--good) 135deg 180deg, transparent 180deg 360deg);
+  border: 1px solid rgba(148, 163, 173, 0.24);
+}
+.bot-analog-arc::after {
+  content: "";
+  position: absolute;
+  left: 11%;
+  right: 11%;
+  bottom: -1px;
+  height: 78%;
+  border-radius: 220px 220px 0 0;
+  background: #111820;
+  border: 1px solid rgba(148, 163, 173, 0.16);
+  border-bottom: 0;
+}
+.bot-analog-needle {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 3px;
+  height: 82%;
+  transform-origin: 50% 100%;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 12px currentColor;
+}
+.bot-analog-hub {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 18px;
+  height: 18px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #dce7ee;
+  border: 3px solid #111820;
+  box-shadow: 0 0 0 1px rgba(148, 163, 173, 0.36);
+}
+.bot-analog-center {
+  position: absolute;
+  left: 50%;
+  bottom: 13%;
+  transform: translateX(-50%);
+  text-align: center;
+  min-width: 120px;
+}
+.bot-analog-number {
+  color: var(--ink);
+  font-weight: 900;
+  font-size: 1.02rem;
+  line-height: 1.08;
+}
+.bot-analog-caption {
+  color: var(--muted);
+  font-size: 0.7rem;
+  margin-top: 0.12rem;
+}
+.bot-analog-tick {
+  position: absolute;
+  bottom: 1px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+.bot-analog-tick.left { left: 0; }
+.bot-analog-tick.mid {
+  left: 50%;
+  transform: translateX(-50%);
+}
+.bot-analog-tick.right { right: 0; }
+.bot-meter-bands {
+  display: flex;
+  justify-content: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-top: 0.28rem;
+}
+.bot-meter-band {
+  border: 1px solid rgba(148, 163, 173, 0.2);
+  border-radius: 999px;
+  padding: 0.08rem 0.42rem;
+  background: rgba(13, 18, 22, 0.38);
+}
+.bot-meter-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.74rem;
+  margin-top: 0.32rem;
+}
+.nav-hint {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.sidebar-panel {
+  border: 1px solid rgba(121, 167, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(17, 24, 32, 0.86);
+  padding: 0.65rem 0.68rem;
+  margin: 0.12rem 0 0.55rem;
+}
+.sidebar-panel-title {
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 850;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-bottom: 0.28rem;
+}
+.sidebar-panel-text {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.38;
+}
 .good { color: var(--good); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
@@ -437,6 +1043,9 @@ div[data-testid="stDataFrame"] {
   }
   .runtime-discovery,
   .runtime-picks,
+  .metric-tile-grid,
+  .journal-card-grid,
+  .bot-meter-grid,
   .trade-console-grid,
   .trade-health-strip {
     grid-template-columns: 1fr;
@@ -543,9 +1152,14 @@ def load_live_scan(path: str = "reports/live_scan.json") -> pd.DataFrame:
     if not file_path.exists():
         log_diagnostic(logger, "live_scan_loaded", source="default", rows=len(DEFAULT_LIVE_SYMBOLS))
         return merge_stream_state(default_live_scan_frame(), stream)
-    frame = merge_stream_state(ensure_default_live_symbols(pd.read_json(file_path)), stream)
-    log_diagnostic(logger, "live_scan_loaded", source="file", rows=len(frame))
-    return frame
+    try:
+        frame = merge_stream_state(ensure_default_live_symbols(pd.read_json(file_path)), stream)
+        log_diagnostic(logger, "live_scan_loaded", source="file", rows=len(frame))
+        return frame
+    except (OSError, ValueError, pd.errors.EmptyDataError, json.JSONDecodeError) as exc:
+        log_diagnostic(logger, "live_scan_file_unavailable", path=str(file_path), reason=str(exc))
+        st.warning("No replay data available yet. Run Binance backfill or scanner.")
+        return merge_stream_state(default_live_scan_frame(), stream)
 
 
 @st.cache_data(ttl=2, show_spinner=False)
@@ -1245,7 +1859,18 @@ def load_top10_replay_trades(path: str = "reports/top10_replay_trades.csv") -> p
         return pd.DataFrame()
     try:
         return pd.read_csv(file_path)
-    except (OSError, pd.errors.ParserError):
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_top10_replay_metrics(path: str = "reports/top10_replay_metrics.csv") -> pd.DataFrame:
+    file_path = Path(path)
+    if not file_path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(file_path)
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
         return pd.DataFrame()
 
 
@@ -1569,6 +2194,17 @@ def normalize_bot_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "updated_at": "",
         "deployed_at": "",
         "heartbeat_at": "",
+        "cumulative_started_at": "",
+        "cumulative_realized_pnl": 0.0,
+        "cumulative_fees": 0.0,
+        "cumulative_slippage": 0.0,
+        "cumulative_trade_count": 0,
+        "last_entry_at": "",
+        "last_exit_at": "",
+        "runtime_position_state": "OUT_OF_TRADE",
+        "last_trade_event_type": "",
+        "last_trade_event_at": "",
+        "last_trade_event_reason": "",
     }
     for column, default in defaults.items():
         if column not in frame.columns:
@@ -1656,9 +2292,17 @@ def bot_live_mark(bot: pd.Series, scan: pd.DataFrame) -> dict[str, float | str |
     params = params if isinstance(params, dict) else {}
     entry_price = float(bot.get("runtime_entry_price", 0.0) or params.get("runtime_entry_price") or scan_row.get("active_entry", 0.0) or 0.0)
     started_at = str(bot.get("started_at", "") or params.get("runtime_started_at", "") or bot.get("deployed_at", "") or "")
+    cumulative_started_at = str(
+        bot.get("cumulative_started_at", "")
+        or params.get("cumulative_started_at", "")
+        or params.get("runtime_cumulative_started_at", "")
+        or bot.get("created_at", "")
+        or started_at
+    )
     capital = float(bot.get("capital", 0.0) or 0.0)
     state = str(bot.get("state", "DRAFT"))
-    in_market = state in {"RUNNING", "DEPLOYED"}
+    trade_status = runtime_trade_position_status(bot, pd.DataFrame())
+    in_market = bool(trade_status["in_trade"])
     pnl_pct = 0.0 if not in_market or entry_price <= 0 or last_price <= 0 else (last_price - entry_price) / entry_price * 100
     pnl = capital * pnl_pct / 100
     return {
@@ -1669,9 +2313,96 @@ def bot_live_mark(bot: pd.Series, scan: pd.DataFrame) -> dict[str, float | str |
         "pnl": pnl,
         "pnl_pct": pnl_pct,
         "started_at": started_at,
+        "cumulative_started_at": cumulative_started_at,
         "socket_age": stream_age_text(scan_row.get("stream_updated_at", "")),
         "socket_status": str(scan_row.get("stream_status", "not_started")),
+        "stream_updated_at": str(scan_row.get("stream_updated_at", "")),
+        "last_mark_source": "market_feed" if last_price > 0 else "unavailable",
         "in_market": in_market,
+        "trade_position_state": str(trade_status["trade_position_state"]),
+        "trade_position_reason": str(trade_status["trade_position_reason"]),
+        "last_entry_at": str(trade_status["last_entry_at"]),
+        "last_exit_at": str(trade_status["last_exit_at"]),
+    }
+
+
+def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_events: pd.DataFrame | None = None) -> dict[str, object]:
+    bot_id = str(bot.get("bot_id", bot.get("name", ""))) if hasattr(bot, "get") else ""
+    bot_name = str(bot.get("name", "")) if hasattr(bot, "get") else ""
+    runtime_state = str(bot.get("state", "DRAFT") if hasattr(bot, "get") else "DRAFT")
+    params = bot_parameters(bot)
+    if runtime_state not in {"RUNNING", "DEPLOYED"}:
+        return {
+            "trade_position_state": "RUNTIME_STOPPED",
+            "in_trade": False,
+            "trade_position_reason": "runtime is not running",
+            "last_entry_at": str(bot.get("last_entry_at", "") if hasattr(bot, "get") else ""),
+            "last_exit_at": str(bot.get("last_exit_at", "") if hasattr(bot, "get") else ""),
+            "last_trade_event_type": "",
+        }
+
+    frame = trade_events.copy() if trade_events is not None and not trade_events.empty else pd.DataFrame(load_json_list(RUNTIME_TRADE_EVENTS_PATH))
+    if not frame.empty:
+        mask = pd.Series(False, index=frame.index)
+        if "bot_id" in frame:
+            mask = mask | frame["bot_id"].astype(str).isin({bot_id, bot_name})
+        if "bot_name" in frame:
+            mask = mask | frame["bot_name"].astype(str).isin({bot_id, bot_name})
+        matches = frame[mask].copy()
+        time_column = next((column for column in ["event_time", "timestamp", "created_at", "snapshot_time"] if column in matches), "")
+        if not matches.empty and time_column:
+            matches["_event_time"] = pd.to_datetime(matches[time_column], errors="coerce", utc=True)
+            matches = matches.dropna(subset=["_event_time"]).sort_values("_event_time")
+            if not matches.empty:
+                event_type = matches.get("event_type", pd.Series("", index=matches.index)).astype(str)
+                lifecycle = matches.get("lifecycle_state", pd.Series("", index=matches.index)).astype(str)
+                position = matches.get("position_state", pd.Series("", index=matches.index)).astype(str)
+                entry_mask = event_type.isin(["TradeEntered", "TradeCreated"]) | lifecycle.isin(["Submitted", "Filled", "Active", "Partially Filled", "Partially Exited"]) | position.eq("OPEN")
+                exit_mask = event_type.isin(["TradeExited", "StopTriggered", "RiskTriggered"]) | lifecycle.isin(["Closed", "Cancelled", "Failed"]) | position.eq("FLAT")
+                entry_time = matches.loc[entry_mask, "_event_time"].max() if entry_mask.any() else pd.NaT
+                exit_time = matches.loc[exit_mask, "_event_time"].max() if exit_mask.any() else pd.NaT
+                last = matches.iloc[-1]
+                last_event_type = str(last.get("event_type", ""))
+                last_position = str(last.get("position_state", ""))
+                last_lifecycle = str(last.get("lifecycle_state", ""))
+                exited_after_entry = pd.notna(exit_time) and (pd.isna(entry_time) or exit_time >= entry_time)
+                if exited_after_entry or last_event_type in {"TradeExited", "StopTriggered", "RiskTriggered"} or last_position == "FLAT" or last_lifecycle in {"Closed", "Cancelled", "Failed"}:
+                    return {
+                        "trade_position_state": "OUT_OF_TRADE",
+                        "in_trade": False,
+                        "trade_position_reason": f"exit signal recorded: {last_event_type or last_lifecycle or last_position}",
+                        "last_entry_at": "" if pd.isna(entry_time) else entry_time.isoformat(),
+                        "last_exit_at": "" if pd.isna(exit_time) else exit_time.isoformat(),
+                        "last_trade_event_type": last_event_type,
+                    }
+                if pd.notna(entry_time) or last_position == "OPEN":
+                    return {
+                        "trade_position_state": "IN_TRADE",
+                        "in_trade": True,
+                        "trade_position_reason": f"open trade event recorded: {last_event_type or last_lifecycle or last_position}",
+                        "last_entry_at": "" if pd.isna(entry_time) else entry_time.isoformat(),
+                        "last_exit_at": "" if pd.isna(exit_time) else exit_time.isoformat(),
+                        "last_trade_event_type": last_event_type,
+                    }
+
+    explicit_position = str(params.get("runtime_position_state", bot.get("runtime_position_state", "") if hasattr(bot, "get") else "")).upper()
+    last_exit_at = str(bot.get("last_exit_at", "") or params.get("last_exit_at", "") if hasattr(bot, "get") else "")
+    if explicit_position in {"OUT_OF_TRADE", "FLAT"} or last_exit_at:
+        return {
+            "trade_position_state": "OUT_OF_TRADE",
+            "in_trade": False,
+            "trade_position_reason": "exit signal recorded in runtime metadata",
+            "last_entry_at": str(bot.get("last_entry_at", "") or params.get("last_entry_at", "") if hasattr(bot, "get") else ""),
+            "last_exit_at": last_exit_at,
+            "last_trade_event_type": "",
+        }
+    return {
+        "trade_position_state": "IN_TRADE",
+        "in_trade": True,
+        "trade_position_reason": "runtime running with no exit signal recorded",
+        "last_entry_at": str(bot.get("last_entry_at", "") or params.get("last_entry_at", "") or bot.get("deployed_at", "") if hasattr(bot, "get") else ""),
+        "last_exit_at": "",
+        "last_trade_event_type": "",
     }
 
 
@@ -1694,6 +2425,56 @@ def safe_number(value: object, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return number if np.isfinite(number) else default
+
+
+def run_days_since(value: str, minimum_days: float = 0.0) -> float:
+    if not value:
+        return minimum_days
+    try:
+        start = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+    except ValueError:
+        return minimum_days
+    elapsed_days = (datetime.now(UTC) - start.astimezone(UTC)).total_seconds() / 86_400
+    return max(minimum_days, elapsed_days)
+
+
+def annualized_cagr_from_run_return(run_return_pct: float, run_days: float) -> float | None:
+    if run_days <= 0 or run_return_pct <= -100:
+        return None
+    return ((1.0 + (run_return_pct / 100.0)) ** (365.0 / run_days) - 1.0) * 100.0
+
+
+def cagr_maturity_label(run_days: float) -> str:
+    if run_days < 7:
+        return "Too early for CAGR"
+    if run_days < 30:
+        return "Early annualized"
+    return "CAGR"
+
+
+def latest_pnl_snapshot_for_bot(bot_id: str, bot_name: str, snapshots: pd.DataFrame) -> pd.Series:
+    if snapshots.empty:
+        return pd.Series(dtype=object)
+    frame = snapshots.copy()
+    if "snapshot_time" in frame:
+        frame["_snapshot_time"] = pd.to_datetime(frame["snapshot_time"], errors="coerce", utc=True)
+        frame = frame.sort_values("_snapshot_time")
+    masks = []
+    if "bot_id" in frame:
+        masks.append(frame["bot_id"].astype(str) == str(bot_id))
+        masks.append(frame["bot_id"].astype(str) == str(bot_name))
+    if "trade_id" in frame:
+        masks.append(frame["trade_id"].astype(str).str.startswith(f"{bot_id}:"))
+        masks.append(frame["trade_id"].astype(str).str.startswith(f"{bot_name}:"))
+    if not masks:
+        return pd.Series(dtype=object)
+    combined = masks[0]
+    for mask in masks[1:]:
+        combined = combined | mask
+    matches = frame[combined]
+    return matches.iloc[-1] if not matches.empty else pd.Series(dtype=object)
 
 
 def money_text(value: object) -> str:
@@ -1893,6 +2674,8 @@ def validation_metrics_for_bot(bot_name: str) -> dict[str, object]:
     row = last_validation_for_bot(bot_name)
     if row is None:
         return {}
+    row_values = row.to_dict() if hasattr(row, "to_dict") else dict(row) if isinstance(row, dict) else {}
+    row_values = {key: value for key, value in row_values.items() if not (isinstance(value, float) and pd.isna(value))}
     metrics = row.get("metrics", {}) if hasattr(row, "get") else {}
     if isinstance(metrics, str):
         try:
@@ -1901,7 +2684,7 @@ def validation_metrics_for_bot(bot_name: str) -> dict[str, object]:
         except json.JSONDecodeError:
             metrics = {}
     metrics = metrics if isinstance(metrics, dict) else {}
-    merged = {**metrics}
+    merged = {**row_values, **metrics}
     for key in ["run_id", "timeframe", "start_date", "end_date", "capital", "state", "created_at", "updated_at"]:
         if key in row:
             merged[key] = row.get(key)
@@ -1931,6 +2714,10 @@ def runtime_health_light(profile: dict[str, object]) -> tuple[str, str]:
 def runtime_guidance(profile: dict[str, object]) -> str:
     if str(profile.get("health_light")) == "Red":
         return "Critical runtime state; stop or reconcile before new exposure."
+    if str(profile.get("trade_position_state")) == "OUT_OF_TRADE" and str(profile.get("runtime_status")) in {"RUNNING", "DEPLOYED"}:
+        return "Bot is running 24x7 but out of trade after exit signal; waiting for next entry."
+    if str(profile.get("trade_position_state")) == "IN_TRADE":
+        return "Bot is running 24x7 and currently in trade; monitor stop, P&L, and exit state."
     if float(profile.get("current_drawdown_pct", 0.0) or 0.0) <= -8.0:
         return "Drawdown approaching threshold; monitor closely."
     if str(profile.get("signal_status", "NO SIGNAL")) in {"BUY", "IN TRADE"} and str(profile.get("health_light")) == "Green":
@@ -2031,6 +2818,15 @@ def bot_marketplace_panel(bots: pd.DataFrame) -> None:
 
 def runtime_instance_profile(bot: pd.Series, scan: pd.DataFrame, matrix: pd.DataFrame) -> dict[str, object]:
     live_mark = bot_live_mark(bot, scan)
+    trade_position = runtime_trade_position_status(bot, load_runtime_trade_events())
+    live_mark = {
+        **live_mark,
+        "in_market": bool(trade_position["in_trade"]),
+        "trade_position_state": str(trade_position["trade_position_state"]),
+        "trade_position_reason": str(trade_position["trade_position_reason"]),
+        "last_entry_at": str(trade_position["last_entry_at"]),
+        "last_exit_at": str(trade_position["last_exit_at"]),
+    }
     deployment = bot_deployment_profile(bot)
     validation = validation_metrics_for_bot(str(bot.get("name", "")))
     symbol = str(bot.get("symbol", ""))
@@ -2088,6 +2884,11 @@ def runtime_instance_profile(bot: pd.Series, scan: pd.DataFrame, matrix: pd.Data
         "symbol": symbol,
         "timeframe": timeframe,
         "runtime_status": state,
+        "trade_position_state": str(live_mark["trade_position_state"]),
+        "trade_position_reason": str(live_mark["trade_position_reason"]),
+        "in_trade": bool(live_mark["in_market"]),
+        "last_entry_at": str(live_mark["last_entry_at"]),
+        "last_exit_at": str(live_mark["last_exit_at"]),
         "validation_status": "BACKTESTED" if validation else str(bot.get("validation_status", "PENDING") or "PENDING"),
         "deployment_timestamp": str(bot.get("deployed_at", "") or live_mark.get("started_at", "")),
         "runtime_duration_hours": runtime_hours_since(str(live_mark.get("started_at", ""))),
@@ -2156,11 +2957,35 @@ def load_runtime_alerts() -> pd.DataFrame:
 
 @st.cache_data(ttl=5, show_spinner=False)
 def load_runtime_trade_events() -> pd.DataFrame:
+    if setting_bool("database_enabled"):
+        try:
+            import asyncio
+
+            frame = asyncio.run(_load_runtime_events_from_db())
+            if not frame.empty:
+                return frame
+        except Exception as exc:
+            logger.exception("runtime_events_database_load_failed fallback=file")
+            append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "RUNTIME_EVENTS", str(exc))
     return pd.DataFrame(load_json_list(RUNTIME_TRADE_EVENTS_PATH))
 
 
 @st.cache_data(ttl=5, show_spinner=False)
 def load_runtime_trade_pnl_snapshots() -> pd.DataFrame:
+    if setting_bool("database_enabled"):
+        try:
+            import asyncio
+
+            frame = asyncio.run(_load_runtime_events_from_db())
+            if not frame.empty and "event_type" in frame:
+                snapshots = frame[frame["event_type"].astype(str) == "PNL_SNAPSHOT"].copy()
+                if not snapshots.empty:
+                    snapshots["snapshot_id"] = snapshots["event_id"]
+                    snapshots["snapshot_time"] = snapshots["event_time"]
+                    return snapshots
+        except Exception as exc:
+            logger.exception("runtime_pnl_snapshots_database_load_failed fallback=file")
+            append_file_journal("SYSTEM", "", "DATABASE_FALLBACK", "WARN", "RUNTIME_PNL_SNAPSHOTS", str(exc))
     return pd.DataFrame(load_json_list(RUNTIME_TRADE_PNL_SNAPSHOTS_PATH))
 
 
@@ -2428,6 +3253,127 @@ def trade_management_live_analytics_component(active: pd.DataFrame) -> None:
     )
 
 
+def trade_management_live_active_grid_component(active: pd.DataFrame) -> None:
+    rows = []
+    if not active.empty:
+        for _, row in active.iterrows():
+            rows.append(
+                {
+                    "trade_id": str(row.get("Trade ID", "")),
+                    "bot": str(row.get("Bot", "")),
+                    "strategy": str(row.get("Strategy ID", "")),
+                    "symbol": str(row.get("Symbol", "")),
+                    "entry_timestamp": str(row.get("Entry Timestamp", "")),
+                    "exit_timestamp": str(row.get("Exit Timestamp", "Open - not exited")),
+                    "entry_price": safe_number(row.get("Entry Price")),
+                    "current_price": safe_number(row.get("Current Price")),
+                    "capital": safe_number(row.get("Capital Allocated")),
+                    "position_state": str(row.get("Position State", "")),
+                    "market_feed_timestamp": str(row.get("Market Feed Timestamp", "")),
+                    "market_feed_status": str(row.get("Market Feed Status", "")),
+                }
+            )
+    components.html(
+        f"""
+        <div id="live-active-trades"></div>
+        <style>
+          body {{ margin:0; background:transparent; color:#e8edf2; font-family:Inter,Arial,sans-serif; }}
+          .live-table {{ border:1px solid #26323b; border-radius:8px; overflow:hidden; background:#111820; }}
+          .live-row {{ display:grid; grid-template-columns:1.15fr .95fr .8fr .8fr .8fr .9fr .9fr; gap:.45rem; align-items:center; padding:.52rem .62rem; border-bottom:1px solid #26323b; }}
+          .live-row:last-child {{ border-bottom:0; }}
+          .live-head {{ color:#94a3ad; text-transform:uppercase; font-size:.68rem; letter-spacing:.04em; background:#0d1216; }}
+          .live-cell {{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.78rem; }}
+          .strong {{ font-weight:820; color:#e8edf2; }}
+          .good {{ color:#55d49a; }} .bad {{ color:#ff6f7d; }} .muted {{ color:#94a3ad; }}
+          @media (max-width:900px) {{ .live-row {{ grid-template-columns:1fr 1fr; }} .hide-small {{ display:none; }} }}
+        </style>
+        <script>
+          const activeRows = {json.dumps(rows)};
+          const activeRoot = document.getElementById("live-active-trades");
+          const activePrices = Object.fromEntries(activeRows.map((row) => [row.symbol, Number(row.current_price || 0)]));
+          function money(value) {{
+            const n = Number(value);
+            if (!Number.isFinite(n)) return "$0.00";
+            return "$" + n.toLocaleString(undefined, {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }});
+          }}
+          function price(value) {{
+            const n = Number(value);
+            if (!Number.isFinite(n) || n <= 0) return "n/a";
+            return "$" + n.toLocaleString(undefined, {{ minimumFractionDigits: 2, maximumFractionDigits: 6 }});
+          }}
+          function pct(value) {{
+            const n = Number(value);
+            if (!Number.isFinite(n)) return "0.00%";
+            return n.toFixed(2) + "%";
+          }}
+          function age(value) {{
+            if (!value || String(value).startsWith("Open")) return value || "Open - not exited";
+            const ts = new Date(value);
+            if (Number.isNaN(ts.getTime())) return String(value);
+            const secs = Math.max(0, Math.floor((Date.now() - ts.getTime()) / 1000));
+            if (secs < 60) return secs + "s ago";
+            const mins = Math.floor(secs / 60);
+            if (mins < 60) return mins + "m ago";
+            const hours = Math.floor(mins / 60);
+            return hours + "h ago";
+          }}
+          function render(status = "market feed waiting") {{
+            if (!activeRows.length) {{
+              activeRoot.innerHTML = "<div class='muted'>No active trades.</div>";
+              return;
+            }}
+            const body = activeRows.map((row) => {{
+              const entry = Number(row.entry_price || 0);
+              const mark = Number(activePrices[row.symbol] || row.current_price || 0);
+              const capital = Number(row.capital || 0);
+              const roi = entry > 0 && mark > 0 ? (mark - entry) / entry * 100 : 0;
+              const pnl = capital * roi / 100;
+              const cls = pnl >= 0 ? "good" : "bad";
+              return `<div class="live-row">
+                <div class="live-cell strong" title="${{row.trade_id}}">${{row.bot}}</div>
+                <div class="live-cell">${{row.symbol}}</div>
+                <div class="live-cell">${{price(entry)}}</div>
+                <div class="live-cell">${{price(mark)}}</div>
+                <div class="live-cell ${{cls}}">${{money(pnl)}} / ${{pct(roi)}}</div>
+                <div class="live-cell muted" title="${{row.entry_timestamp}}">Entry ${{age(row.entry_timestamp)}}</div>
+                <div class="live-cell muted" title="${{row.exit_timestamp}}">Exit ${{age(row.exit_timestamp)}}</div>
+              </div>`;
+            }}).join("");
+            activeRoot.innerHTML = `<div class="live-table">
+              <div class="live-row live-head"><div>Bot</div><div>Symbol</div><div>Entry</div><div>Live Mark</div><div>P&L</div><div>Entry Time</div><div>Exit Time</div></div>
+              ${{body}}
+            </div><div class="muted" style="font-size:.76rem;margin-top:.35rem;">${{status}}. Active marks update in place from Binance testnet trade stream; page does not refresh.</div>`;
+          }}
+          function connect() {{
+            const symbols = [...new Set(activeRows.map((row) => String(row.symbol || "").replace("/", "").toLowerCase()).filter(Boolean))];
+            if (!symbols.length) {{ render("no symbols"); return; }}
+            const streams = symbols.map((symbol) => `${{symbol}}@trade`).join("/");
+            const ws = new WebSocket(`wss://stream.testnet.binance.vision/stream?streams=${{streams}}`);
+            ws.onopen = () => render("streaming active trade marks");
+            ws.onmessage = (event) => {{
+              try {{
+                const parsed = JSON.parse(event.data);
+                const data = parsed.data || {{}};
+                const symbol = String(data.s || "").replace("USDT", "/USDT");
+                const mark = Number(data.p);
+                if (symbol && Number.isFinite(mark)) activePrices[symbol] = mark;
+                render("streaming active trade marks");
+              }} catch (err) {{
+                render("stream parse skipped");
+              }}
+            }};
+            ws.onerror = () => render("market feed warning");
+            ws.onclose = () => setTimeout(connect, 4000);
+          }}
+          render();
+          connect();
+          setInterval(() => render("streaming active trade marks"), 1000);
+        </script>
+        """,
+        height=245,
+    )
+
+
 def latest_order_state(order_audit: pd.DataFrame, bot_id: str, bot_name: str) -> dict[str, object]:
     if order_audit.empty:
         return {}
@@ -2448,6 +3394,38 @@ def latest_order_state(order_audit: pd.DataFrame, bot_id: str, bot_name: str) ->
         matches["_event_time"] = pd.to_datetime(matches[time_column], errors="coerce")
         matches = matches.sort_values("_event_time")
     return matches.iloc[-1].to_dict()
+
+
+def trade_event_timestamps(trade_events: pd.DataFrame, bot_id: str, bot_name: str, trade_id: str = "") -> dict[str, str]:
+    if trade_events.empty:
+        return {"entry_timestamp": "", "exit_timestamp": ""}
+    frame = trade_events.copy()
+    mask = pd.Series(False, index=frame.index)
+    for column in [column for column in ["bot_id", "bot_name"] if column in frame]:
+        mask = mask | frame[column].astype(str).isin({str(bot_id), str(bot_name)})
+    if trade_id and "trade_id" in frame:
+        mask = mask | frame["trade_id"].astype(str).eq(str(trade_id))
+    matches = frame[mask].copy()
+    if matches.empty:
+        return {"entry_timestamp": "", "exit_timestamp": ""}
+    time_column = next((column for column in ["event_time", "timestamp", "created_at", "snapshot_time"] if column in matches), "")
+    if not time_column:
+        return {"entry_timestamp": "", "exit_timestamp": ""}
+    matches["_event_time"] = pd.to_datetime(matches[time_column], errors="coerce", utc=True)
+    matches = matches.dropna(subset=["_event_time"]).sort_values("_event_time")
+    if matches.empty:
+        return {"entry_timestamp": "", "exit_timestamp": ""}
+    event_type = matches.get("event_type", pd.Series("", index=matches.index)).astype(str)
+    lifecycle = matches.get("lifecycle_state", pd.Series("", index=matches.index)).astype(str)
+    position = matches.get("position_state", pd.Series("", index=matches.index)).astype(str)
+    entry_mask = event_type.isin(["TradeEntered", "TradeCreated"]) | lifecycle.isin(["Submitted", "Filled", "Active"]) | position.eq("OPEN")
+    exit_mask = event_type.isin(["TradeExited", "StopTriggered", "BOT_STOPPED"]) | lifecycle.isin(["Closed", "Cancelled", "Failed"]) | position.eq("FLAT")
+    entry_time = matches.loc[entry_mask, "_event_time"].min() if entry_mask.any() else pd.NaT
+    exit_time = matches.loc[exit_mask, "_event_time"].max() if exit_mask.any() else pd.NaT
+    return {
+        "entry_timestamp": "" if pd.isna(entry_time) else entry_time.isoformat(),
+        "exit_timestamp": "" if pd.isna(exit_time) else exit_time.isoformat(),
+    }
 
 
 def trade_lifecycle_state(runtime_status: str, order_status: str, exposure: float, realized_pnl: float) -> str:
@@ -2490,6 +3468,7 @@ def trade_management_rows(
     validation_runs: pd.DataFrame,
     backtest_trades: pd.DataFrame,
     order_audit: pd.DataFrame,
+    trade_events: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     active_rows: list[dict[str, object]] = []
     strategy_rows: list[dict[str, object]] = []
@@ -2498,6 +3477,13 @@ def trade_management_rows(
             profile = runtime_instance_profile(bot, scan, matrix)
             order = latest_order_state(order_audit, str(bot.get("bot_id", "")), str(bot.get("name", "")))
             order_status = str(order.get("status", order.get("order_status", "")) or "")
+            trade_id = f"{bot.get('bot_id', bot.get('name', 'bot'))}:{profile['symbol']}:{profile['timeframe']}"
+            event_times = trade_event_timestamps(
+                trade_events,
+                str(bot.get("bot_id", "")),
+                str(bot.get("name", "")),
+                trade_id,
+            )
             lifecycle = trade_lifecycle_state(
                 str(profile["runtime_status"]),
                 order_status,
@@ -2505,12 +3491,17 @@ def trade_management_rows(
                 safe_number(profile["realized_pnl"]),
             )
             entry_price = safe_number(bot.get("runtime_entry_price", bot_parameters(bot).get("runtime_entry_price", 0.0)))
-            current_price = safe_number(bot_live_mark(bot, scan).get("last_price", 0.0))
+            live_mark = bot_live_mark(bot, scan)
+            current_price = safe_number(live_mark.get("last_price", 0.0))
             stop_value = str(profile["stop_loss_value"])
             stop_price = safe_number(order.get("stop_price", order.get("stop", 0.0)), 0.0)
             stop_distance = 0.0 if current_price <= 0 or stop_price <= 0 else ((current_price - stop_price) / current_price) * 100.0
+            entry_timestamp = event_times["entry_timestamp"] or str(bot.get("last_entry_at", "") or "") or str(profile["deployment_timestamp"] or "")
+            exit_timestamp = event_times["exit_timestamp"] or str(bot.get("last_exit_at", "") or "")
+            if not exit_timestamp and safe_number(profile["current_exposure"]) > 0:
+                exit_timestamp = "Open - not exited"
             row = {
-                "Trade ID": f"{bot.get('bot_id', bot.get('name', 'bot'))}:{profile['symbol']}:{profile['timeframe']}",
+                "Trade ID": trade_id,
                 "Bot Instance ID": str(bot.get("bot_id", bot.get("name", ""))),
                 "Bot": profile["bot_instance_name"],
                 "Strategy ID": profile["strategy_name"],
@@ -2520,7 +3511,8 @@ def trade_management_rows(
                 "Trade State": lifecycle,
                 "Order State": order_status or "Not submitted",
                 "Position State": "Open" if safe_number(profile["current_exposure"]) > 0 else "Flat",
-                "Entry Timestamp": profile["deployment_timestamp"],
+                "Entry Timestamp": entry_timestamp,
+                "Exit Timestamp": exit_timestamp,
                 "Entry Price": entry_price,
                 "Entry Qty": profile["qty_per_order"],
                 "Entry Signal": profile["signal_status"],
@@ -2539,6 +3531,10 @@ def trade_management_rows(
                 "Volatility Risk": str(profile.get("current_bucket", "NO SIGNAL")),
                 "Health": profile["health_light"],
                 "Guidance": profile["operational_guidance"],
+                "Market Feed Timestamp": live_mark.get("stream_updated_at", ""),
+                "Market Feed Age": live_mark.get("socket_age", ""),
+                "Market Feed Status": live_mark.get("socket_status", ""),
+                "Last Mark Source": live_mark.get("last_mark_source", ""),
                 "Exit Reason": "",
                 "Fees": 0.0,
                 "Slippage": 0.0,
@@ -2558,7 +3554,7 @@ def trade_management_rows(
                     "Win Rate %": profile["win_rate"],
                     "Profit Factor": profile["profit_factor"],
                     "Backtest ROI": profile["backtest_roi"],
-                    "Backtest Max DD %": profile["backtest_max_drawdown"],
+                    "Backtest Max Drawdown %": profile["backtest_max_drawdown"],
                     "Current Bucket": profile["current_bucket"],
                     "Health": profile["health_light"],
                     "Guidance": profile["operational_guidance"],
@@ -2696,6 +3692,15 @@ async def _delete_bot_instance_from_db(name: str) -> int:
     return deleted
 
 
+async def _load_runtime_events_from_db() -> pd.DataFrame:
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        frame = await read_runtime_events(session)
+    await engine.dispose()
+    return frame
+
+
 async def _append_journal_to_db(event: dict[str, object]) -> None:
     engine = build_engine()
     factory = build_session_factory(engine)
@@ -2728,6 +3733,70 @@ async def _load_validation_runs_from_db() -> pd.DataFrame:
         frame = await read_validation_runs(session)
     await engine.dispose()
     return frame
+
+
+async def _security_summary_from_db() -> dict[str, int]:
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        summary = await security_schema_summary(session)
+    await engine.dispose()
+    return summary
+
+
+async def _register_user_from_db(name: str, email: str, captcha: str) -> str:
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        token = await register_user(session, name, email, captcha)
+    await engine.dispose()
+    return token
+
+
+async def _login_user_from_db(email: str, password: str, captcha: str):
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        context = await login_user(session, email, password, captcha)
+    await engine.dispose()
+    return context
+
+
+async def _logout_user_from_db(session_token: str) -> None:
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        await logout_session(session, session_token)
+    await engine.dispose()
+
+
+async def _request_password_reset_from_db(email: str) -> str | None:
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        token = await create_password_reset(session, email)
+    await engine.dispose()
+    return token
+
+
+async def _change_user_password_from_db(user_id: int, current_password: str, new_password: str) -> None:
+    from sqlalchemy import select
+
+    from aegis_trader.security.auth import audit
+    from aegis_trader.storage.models import UserRow
+
+    engine = build_engine()
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        user = await session.scalar(select(UserRow).where(UserRow.id == user_id))
+        if user is None:
+            raise PermissionError("User session is no longer valid.")
+        if not verify_password(current_password, user.password_hash):
+            await audit(session, "password_change_failed", actor_user_id=user_id, target_user_id=user_id, details={"reason": "bad_current_password"})
+            await session.commit()
+            raise PermissionError("Current password is incorrect.")
+        await set_user_password(session, user_id, new_password, force_change=False)
+    await engine.dispose()
 
 
 async def _load_heartbeat_from_db() -> dict[str, object]:
@@ -2965,8 +4034,8 @@ def status_row(summary: dict[str, float | str]) -> None:
           <div class="status-card"><div class="status-label">Protection</div><div class="status-value warn">{summary["kill"]}</div></div>
           <div class="status-card"><div class="status-label">Session</div><div class="status-value info">TESTNET</div></div>
         </div>
-        <div class="heartbeat">
-          <span class="pill">socket: {stream_status["source"]}</span>
+        <div class="diagnostic-strip">
+          <span class="pill">stream: {stream_status["status"]}</span>
           <span class="pill">stream update: {stream_status["age"]}</span>
           <span class="pill">scanner: {source}</span>
           <span class="pill">last scan: {age_text}</span>
@@ -2976,18 +4045,37 @@ def status_row(summary: dict[str, float | str]) -> None:
         """,
         unsafe_allow_html=True,
     )
+    with st.expander("Diagnostics: feed endpoint and scanner heartbeat", expanded=False):
+        st.caption("Operational diagnostics are kept here so trading decisions stay readable.")
+        st.code(f"socket: {stream_status['source']}", language="text")
+        st.json(
+            {
+                "stream_status": stream_status.get("status"),
+                "stream_age": stream_status.get("age"),
+                "scanner_source": source,
+                "last_scan": age_text,
+                "symbols_ok": heartbeat.get("symbols_ok"),
+                "symbols_error": heartbeat.get("symbols_error"),
+            }
+        )
 
 
 def portfolio_performance_overview(scan: pd.DataFrame, bots: pd.DataFrame) -> None:
     scan = normalize_scan_columns(scan) if not scan.empty else scan
     _, strategy_aggregate = load_cached_strategy_matrix(tuple(STRATEGY_REGISTRY))
     replay_trades = load_top10_replay_trades()
+    meter_rows = bot_cagr_meter_rows(bots, scan)
+    meter_frame = pd.DataFrame(meter_rows)
     running = bots[bots["state"].isin(["DEPLOYED", "RUNNING"])] if not bots.empty and "state" in bots else pd.DataFrame()
-    cumulative_pnl = float(scan["total_pnl"].sum()) if not scan.empty and "total_pnl" in scan else 0.0
-    unrealized = float(pd.to_numeric(scan["active_pnl"], errors="coerce").fillna(0.0).sum()) if not scan.empty and "active_pnl" in scan else 0.0
-    realized = cumulative_pnl - unrealized
-    avg_win_rate = float(scan["win_rate"].mean()) if not scan.empty and "win_rate" in scan else 0.0
-    avg_pf = float(scan["profit_factor"].replace([np.inf, -np.inf], np.nan).fillna(0).mean()) if not scan.empty and "profit_factor" in scan else 0.0
+    cumulative_pnl = float(pd.to_numeric(meter_frame.get("Cumulative P&L", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()) if not meter_frame.empty else 0.0
+    realized = float(pd.to_numeric(meter_frame.get("Realized P&L", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()) if not meter_frame.empty else 0.0
+    unrealized = float(pd.to_numeric(meter_frame.get("Unrealized P&L", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()) if not meter_frame.empty else 0.0
+    avg_win_rate = float(pd.to_numeric(meter_frame.get("Win Rate %", pd.Series(dtype=float)), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().mean()) if not meter_frame.empty else 0.0
+    avg_pf = float(pd.to_numeric(meter_frame.get("Profit Factor", pd.Series(dtype=float)), errors="coerce").replace([np.inf, -np.inf], np.nan).dropna().mean()) if not meter_frame.empty else 0.0
+    if not np.isfinite(avg_win_rate):
+        avg_win_rate = 0.0
+    if not np.isfinite(avg_pf):
+        avg_pf = 0.0
     portfolio_sharpe = sharpe_from_return_series(replay_trades["return_pct"]) if not replay_trades.empty and "return_pct" in replay_trades else 0.0
     best_strategy = pd.Series(dtype=object)
     if not strategy_aggregate.empty and "sharpe_proxy" in strategy_aggregate:
@@ -3010,12 +4098,206 @@ def portfolio_performance_overview(scan: pd.DataFrame, bots: pd.DataFrame) -> No
             f"Best strategy Sharpe: {best_strategy['strategy']} at {float(best_strategy['sharpe_proxy']):.2f}."
         )
     dashboard_risk_guidance(portfolio_sharpe, drawdown)
-    if not scan.empty:
-        ranked = scan.sort_values("total_pnl", ascending=False).head(10)
+    if not meter_frame.empty:
+        ranked = meter_frame.rename(columns={"Bot": "symbol", "Cumulative P&L": "total_pnl", "Win Rate %": "confidence_score", "Profit Factor": "orderflow_score"}).sort_values("total_pnl", ascending=False).head(10)
         fig = make_subplots(rows=1, cols=2, specs=[[{"type": "bar"}, {"type": "scatter"}]], subplot_titles=("Strategy Universe PnL", "Signal Quality"))
         fig.add_trace(go.Bar(x=ranked["symbol"], y=ranked["total_pnl"], marker_color=np.where(ranked["total_pnl"] >= 0, "#55d49a", "#ff6f7d"), name="PnL"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=ranked["confidence_score"], y=ranked["orderflow_score"], mode="markers+text", text=ranked["symbol"], marker={"size": 12, "color": ranked["buy_score"], "colorscale": "Viridis"}, name="Quality"), row=1, col=2)
+        fig.add_trace(go.Scatter(x=ranked["confidence_score"], y=ranked["orderflow_score"], mode="markers+text", text=ranked["symbol"], marker={"size": 12, "color": ranked["total_pnl"], "colorscale": "Viridis"}, name="Quality"), row=1, col=2)
         st.plotly_chart(layout_chart(fig, 300), use_container_width=True)
+
+
+def bot_cagr_meter_rows(bots: pd.DataFrame, scan: pd.DataFrame) -> list[dict[str, object]]:
+    if bots.empty:
+        return []
+    scan = normalize_scan_columns(scan) if not scan.empty else scan
+    matrix, _ = load_cached_strategy_matrix(tuple(STRATEGY_REGISTRY))
+    pnl_snapshots = load_runtime_trade_pnl_snapshots()
+    benchmark = INSTITUTIONAL_BOT_CAGR_MAX_PCT
+    rows: list[dict[str, object]] = []
+    for _, bot in bots.reset_index(drop=True).iterrows():
+        name = str(bot.get("name", "Bot"))
+        strategy = str(bot.get("strategy", ""))
+        symbol = str(bot.get("symbol", ""))
+        state = str(bot.get("state", "DRAFT"))
+        bot_id = str(bot.get("bot_id", name))
+        live_mark = bot_live_mark(bot, scan)
+        snapshot = latest_pnl_snapshot_for_bot(bot_id, name, pnl_snapshots)
+        capital = safe_number(bot.get("capital", live_mark.get("capital", 0.0)), 0.0)
+        snapshot_unrealized = safe_number(snapshot.get("unrealized_pnl", 0.0)) if not snapshot.empty else 0.0
+        snapshot_realized = safe_number(snapshot.get("realized_pnl", 0.0)) if not snapshot.empty else 0.0
+        stored_realized = safe_number(bot.get("cumulative_realized_pnl", 0.0), 0.0)
+        realized_pnl = max(stored_realized, snapshot_realized)
+        unrealized_pnl = snapshot_unrealized
+        cumulative_pnl = realized_pnl + unrealized_pnl
+        if cumulative_pnl == 0.0:
+            realized_pnl = safe_number(bot.get("realized_pnl", 0.0))
+            unrealized_pnl = safe_number(live_mark.get("pnl", 0.0))
+            cumulative_pnl = realized_pnl + unrealized_pnl
+        cumulative_return_pct = 0.0 if capital <= 0 else cumulative_pnl / capital * 100.0
+        cumulative_started_at = str(live_mark.get("cumulative_started_at", "") or live_mark.get("started_at", ""))
+        cumulative_days = run_days_since(cumulative_started_at)
+        live_cagr_value = annualized_cagr_from_run_return(cumulative_return_pct, cumulative_days)
+        live_cagr_pct = 0.0 if live_cagr_value is None or cumulative_days < 7 else live_cagr_value
+        maturity = cagr_maturity_label(cumulative_days)
+        validation = validation_metrics_for_bot(name)
+        backtest_cagr_pct = 0.0
+        win_rate = 0.0
+        max_drawdown = 0.0
+        profit_factor = 0.0
+        trade_count = int(bot.get("cumulative_trade_count", 0) or 0)
+        if not matrix.empty and {"strategy", "symbol"}.issubset(matrix.columns):
+            match = matrix[(matrix["strategy"].astype(str) == strategy) & (matrix["symbol"].astype(str) == symbol)]
+            if not match.empty:
+                perf = match.iloc[0]
+                backtest_cagr_pct = safe_number(perf.get("avg_return_pct", perf.get("total_return_pct", 0.0)))
+                win_rate = safe_number(perf.get("win_rate", 0.0))
+                max_drawdown = safe_number(perf.get("max_drawdown_pct", 0.0))
+                profit_factor = safe_number(perf.get("profit_factor", 0.0))
+                trade_count = int(safe_number(perf.get("trades", trade_count), trade_count))
+        if validation:
+            backtest_cagr_pct = safe_number(validation.get("total_return_pct", validation.get("roi_pct", backtest_cagr_pct)), backtest_cagr_pct)
+            win_rate = safe_number(validation.get("win_rate", win_rate), win_rate)
+            max_drawdown = safe_number(validation.get("max_drawdown_pct", max_drawdown), max_drawdown)
+            profit_factor = safe_number(validation.get("profit_factor", profit_factor), profit_factor)
+            trade_count = int(safe_number(validation.get("total_trades", validation.get("trades", trade_count)), trade_count))
+        use_live_cagr = state in {"RUNNING", "DEPLOYED"} and cumulative_days >= 7 and live_cagr_value is not None
+        bot_cagr_pct = live_cagr_pct if use_live_cagr else backtest_cagr_pct
+        benchmark_position_pct = max(0.0, min(100.0, bot_cagr_pct / max(benchmark, 0.01) * 100.0))
+        tone = "good" if bot_cagr_pct >= benchmark * 0.75 else "warn" if bot_cagr_pct >= 0 else "bad"
+        rows.append(
+            {
+                "Bot": name,
+                "Strategy": strategy,
+                "Coin": symbol,
+                "Timeframe": str(bot.get("timeframe", "")),
+                "State": state,
+                "Bot CAGR %": round(bot_cagr_pct, 2),
+                "Institutional CAGR Max %": round(benchmark, 2),
+                "Benchmark Position %": round(bot_cagr_pct / max(benchmark, 0.01) * 100.0, 1),
+                "Cumulative Return %": round(cumulative_return_pct, 2),
+                "Cumulative Days": round(cumulative_days, 2),
+                "Cumulative P&L": round(cumulative_pnl, 2),
+                "Realized P&L": round(realized_pnl, 2),
+                "Unrealized P&L": round(unrealized_pnl, 2),
+                "_capital": capital,
+                "_cumulative_started_at": cumulative_started_at,
+                "CAGR Maturity": maturity,
+                "Live CAGR %": round(live_cagr_pct, 2),
+                "Backtest CAGR %": round(backtest_cagr_pct, 2),
+                "Trade Count": trade_count,
+                "Win Rate %": round(win_rate, 1),
+                "Max Drawdown %": round(max_drawdown, 1),
+                "Profit Factor": round(profit_factor, 2),
+                "_meter_pct": benchmark_position_pct,
+                "_tone": tone,
+            }
+        )
+    return rows
+
+
+def strategy_cagr_meter_rows(bot_rows: list[dict[str, object]], benchmark: float) -> list[dict[str, object]]:
+    strategy_rows: list[dict[str, object]] = []
+    detail_for_strategy = pd.DataFrame(bot_rows)
+    if detail_for_strategy.empty:
+        return strategy_rows
+    for strategy, group in detail_for_strategy.groupby("Strategy", dropna=False):
+        capital_sum = float(pd.to_numeric(group["_capital"], errors="coerce").fillna(0.0).sum())
+        pnl_sum = float(pd.to_numeric(group["Cumulative P&L"], errors="coerce").fillna(0.0).sum())
+        starts = pd.to_datetime(group["_cumulative_started_at"], errors="coerce", utc=True).dropna()
+        strategy_start = starts.min().isoformat() if not starts.empty else ""
+        strategy_days = run_days_since(strategy_start)
+        strategy_return = 0.0 if capital_sum <= 0 else pnl_sum / capital_sum * 100.0
+        strategy_cagr_value = annualized_cagr_from_run_return(strategy_return, strategy_days)
+        strategy_cagr = 0.0 if strategy_cagr_value is None or strategy_days < 7 else strategy_cagr_value
+        strategy_tone = "good" if strategy_cagr >= benchmark * 0.75 else "warn" if strategy_cagr >= 0 else "bad"
+        strategy_rows.append(
+            {
+                "Strategy": str(strategy),
+                "Bots": int(len(group)),
+                "Strategy CAGR %": round(strategy_cagr, 2),
+                "Cumulative Return %": round(strategy_return, 2),
+                "Cumulative P&L": round(pnl_sum, 2),
+                "Capital": round(capital_sum, 2),
+                "Cumulative Days": round(strategy_days, 2),
+                "CAGR Maturity": cagr_maturity_label(strategy_days),
+                "Institutional CAGR Max %": round(benchmark, 2),
+                "Benchmark Position %": round(strategy_cagr / max(benchmark, 0.01) * 100.0, 1),
+                "_meter_pct": max(0.0, min(100.0, strategy_cagr / max(benchmark, 0.01) * 100.0)),
+                "_tone": strategy_tone,
+            }
+        )
+    return strategy_rows
+
+
+def individual_bot_performance_meters(bots: pd.DataFrame, scan: pd.DataFrame) -> None:
+    if bots.empty:
+        st.info("No bot definitions are configured yet.")
+        return
+    benchmark = INSTITUTIONAL_BOT_CAGR_MAX_PCT
+    source_text = " | ".join(f"{row['source']}: {float(row['cagr_pct']):.2f}% CAGR" for row in INSTITUTIONAL_BOT_CAGR_SOURCES)
+    st.caption(
+        f"Meter ceiling is {benchmark:.2f}% CAGR: the average of three cross-checked institutional managed-futures / CTA annualized performance references. {source_text}."
+    )
+    rows = bot_cagr_meter_rows(bots, scan)
+    html_cards = ["<div class='bot-meter-grid'>"]
+    for row in rows:
+        meter_value = f"{float(row['Bot CAGR %']):.2f}% CAGR" if row["CAGR Maturity"] != "Too early for CAGR" else f"{float(row['Cumulative Return %']):.2f}% cumulative"
+        needle_angle = -90.0 + (float(row["_meter_pct"]) * 1.8)
+        html_cards.append(
+            "<div class='bot-meter-card'>"
+            "<div class='bot-meter-top'>"
+            f"<div><div class='bot-meter-title'>{html.escape(str(row['Bot']))}</div>"
+            f"<div class='bot-meter-meta'>{html.escape(str(row['Strategy']))} | {html.escape(str(row['Coin']))} | {html.escape(str(row['Timeframe']))} | {float(row['Cumulative Days']):.1f} cumulative days</div></div>"
+            f"<div class='bot-meter-value {row['_tone']}'>{meter_value}</div>"
+            "</div>"
+            "<div class='bot-analog-meter'>"
+            "<div class='bot-analog-arc'></div>"
+            f"<div class='bot-analog-needle {row['_tone']}' style='transform: rotate({needle_angle:.1f}deg);'></div>"
+            "<div class='bot-analog-hub'></div>"
+            f"<div class='bot-analog-center'><div class='bot-analog-number'>{float(row['Benchmark Position %']):.1f}%</div><div class='bot-analog-caption'>of institutional max</div></div>"
+            "<span class='bot-analog-tick left'>0</span>"
+            "<span class='bot-analog-tick mid'>50</span>"
+            "<span class='bot-analog-tick right'>100</span>"
+            "</div>"
+            "<div class='bot-meter-bands'><span class='bot-meter-band bad'>Low</span><span class='bot-meter-band warn'>Watch</span><span class='bot-meter-band good'>Strong</span></div>"
+            f"<div class='bot-meter-scale'><span>{html.escape(str(row['CAGR Maturity']))}</span><span>Institutional max {benchmark:.2f}% CAGR</span><span>{float(row['Benchmark Position %']):.1f}% of max</span></div>"
+            "</div>"
+        )
+    html_cards.append("</div>")
+    st.markdown("".join(html_cards), unsafe_allow_html=True)
+    strategy_rows = strategy_cagr_meter_rows(rows, benchmark)
+    if strategy_rows:
+        st.markdown("#### Strategy CAGR Meters")
+        strategy_cards = ["<div class='bot-meter-grid'>"]
+        for row in strategy_rows:
+            meter_value = f"{float(row['Strategy CAGR %']):.2f}% CAGR" if row["CAGR Maturity"] != "Too early for CAGR" else f"{float(row['Cumulative Return %']):.2f}% cumulative"
+            needle_angle = -90.0 + (float(row["_meter_pct"]) * 1.8)
+            strategy_cards.append(
+                "<div class='bot-meter-card'>"
+                "<div class='bot-meter-top'>"
+                f"<div><div class='bot-meter-title'>{html.escape(str(row['Strategy']))}</div>"
+                f"<div class='bot-meter-meta'>{int(row['Bots'])} bot(s) | {float(row['Cumulative Days']):.1f} cumulative days | capital ${float(row['Capital']):,.2f}</div></div>"
+                f"<div class='bot-meter-value {row['_tone']}'>{meter_value}</div>"
+                "</div>"
+                "<div class='bot-analog-meter'>"
+                "<div class='bot-analog-arc'></div>"
+                f"<div class='bot-analog-needle {row['_tone']}' style='transform: rotate({needle_angle:.1f}deg);'></div>"
+                "<div class='bot-analog-hub'></div>"
+                f"<div class='bot-analog-center'><div class='bot-analog-number'>{float(row['Benchmark Position %']):.1f}%</div><div class='bot-analog-caption'>of institutional max</div></div>"
+                "<span class='bot-analog-tick left'>0</span>"
+                "<span class='bot-analog-tick mid'>50</span>"
+                "<span class='bot-analog-tick right'>100</span>"
+                "</div>"
+                "<div class='bot-meter-bands'><span class='bot-meter-band bad'>Low</span><span class='bot-meter-band warn'>Watch</span><span class='bot-meter-band good'>Strong</span></div>"
+                f"<div class='bot-meter-scale'><span>{html.escape(str(row['CAGR Maturity']))}</span><span>Institutional max {benchmark:.2f}% CAGR</span><span>{float(row['Benchmark Position %']):.1f}% of max</span></div>"
+                "</div>"
+            )
+        strategy_cards.append("</div>")
+        st.markdown("".join(strategy_cards), unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(strategy_rows).drop(columns=["_meter_pct", "_tone"], errors="ignore").astype(str), use_container_width=True, hide_index=True)
+    detail = pd.DataFrame(rows).drop(columns=["_meter_pct", "_tone", "_capital", "_cumulative_started_at"], errors="ignore")
+    st.markdown("#### Bot Performance Details")
+    st.dataframe(detail.astype(str), use_container_width=True, hide_index=True)
 
 
 def dashboard_risk_guidance(portfolio_sharpe: float, drawdown: float) -> None:
@@ -3035,7 +4317,7 @@ def dashboard_risk_guidance(portfolio_sharpe: float, drawdown: float) -> None:
 
 def signal_flow_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Signal Flow")
-    st.caption("Colorful live observability from Binance socket data to candle aggregation, features, orderflow, strategy, risk, decision, and journal.")
+    st.caption("Live path from market data to trade readiness, with each gate shown in plain operational language.")
     st.info(
         "Read left to right. Bright nodes are crossed, dim nodes are pending, the dot marks the furthest stage reached, "
         "and the Next Gate column explains what is blocking the token from becoming actionable."
@@ -3044,19 +4326,19 @@ def signal_flow_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
     stream = load_live_stream()
     bots = load_bot_instances()
     if scan.empty:
-        st.info("No live scan rows are available yet. Start the Binance stream to activate the flow map.")
+        st.info("No live market scan data yet. Start the Binance stream to populate the flow map.")
         return
     ordered_symbols = scan.sort_values(["priority", "buy_score", "watch_score"], ascending=[True, False, False])["symbol"].astype(str).tolist()
     developing_symbols = top_developing_signal_flow_symbols(scan, limit=5)
     default_symbols = developing_symbols or ordered_symbols[: min(5, len(ordered_symbols))]
     c1, c2, c3 = st.columns([1.5, 1, 1])
-    selected_symbols = c1.multiselect("Tokens", ordered_symbols, default=default_symbols, help="Defaults to the top 5 developing tokens. You can override the lanes manually.")
+    selected_symbols = c1.multiselect("Coins", ordered_symbols, default=default_symbols, help="Defaults to the top 5 developing coins. You can override the lanes manually.")
     selected_timeframe = c2.selectbox("Pipeline timeframe", ["strategy default", "1m", "5m", "15m", "1h", "4h", "1d"], index=0)
     calm = c3.toggle("Calm motion", value=False, help="Slows the particle flow for lower visual intensity.")
     if developing_symbols:
-        st.caption(f"Default lanes are the current top developing tokens: {', '.join(developing_symbols)}.")
+        st.caption(f"Default lanes are the current top developing coins: {', '.join(developing_symbols)}.")
     if not selected_symbols:
-        st.warning("Select at least one token to render the flow map.")
+        st.warning("Select at least one coin to render the flow map.")
         return
     rows = build_signal_flow_rows(scan, stream, bots, selected_symbols, selected_timeframe)
     fresh_count = sum(1 for row in rows if row["socket_state"] == "LIVE")
@@ -3067,7 +4349,7 @@ def signal_flow_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
     m1.metric("Live Feed Lanes", f"{fresh_count}/{len(rows)}")
     m2.metric("Watch", watch_count)
     m3.metric("Buy Signals", buy_count)
-    m4.metric("Past Orderflow", advanced_count)
+    m4.metric("Order Flow Ready", advanced_count)
     market_bucket_swim_lanes(scan, bots)
     strategy_traffic_light_panel(scan)
     signal_flow_backtest_panel(scan)
@@ -3182,8 +4464,6 @@ def signal_flow_component(rows: list[dict[str, object]], calm: bool = False) -> 
 
 
 def dashboard_screen(summary: dict[str, float | str]) -> None:
-    st.markdown("# mytradingmind.ai")
-    st.caption(f"Version {APP_VERSION} | Global trading operations dashboard. Visibility lives here; heavy bot controls stay inside Bot Management.")
     status_row(summary)
     scan = normalize_scan_columns(load_live_scan())
     bots = load_bot_instances()
@@ -3202,26 +4482,30 @@ def dashboard_screen(summary: dict[str, float | str]) -> None:
     c1.metric("Runtime", str(runtime_status.get("runtime", "UNKNOWN")))
     c2.metric("Running Bots", int(runtime_status.get("running_bots", len(running))))
     c3.metric("Exposure", money_text(active_exposure), f"limit {money_text(risk.get('max_portfolio_exposure', 0.0))}")
-    c4.metric("Overall Replay P&L", money_text(total_pnl))
-    c5.metric("Live Symbols", f"{live_count}/{0 if scan.empty else len(scan)}")
+    c4.metric("Replay P&L", money_text(total_pnl))
+    c5.metric("Live Market Feeds", f"{live_count}/{0 if scan.empty else len(scan)}")
     if stale:
         st.warning(f"Stale data warning: live scanner heartbeat is {stream_age_text(generated_at)} old.")
+        st.markdown(
+            "<div class='decision-summary warn'><div class='decision-summary-title'>Operator focus</div>"
+            "<div class='runtime-bot-boundary-meta'>Scanner data is stale. Treat live signals as watch-only until the feed heartbeat recovers.</div></div>",
+            unsafe_allow_html=True,
+        )
     else:
         st.caption(f"Live panels last updated {stream_age_text(generated_at)} ago. Panels refresh data caches, not the whole execution runtime.")
+        st.markdown(
+            "<div class='decision-summary good'><div class='decision-summary-title'>Operator focus</div>"
+            "<div class='runtime-bot-boundary-meta'>Feed is current. Review Dashboard for visibility, then use Bot Management for execution controls.</div></div>",
+            unsafe_allow_html=True,
+        )
 
-    tab_overview, tab_live, tab_signal, tab_bots, tab_risk = st.tabs(["Overview", "Live Trading", "SignalFlow", "Bot Health", "Risk & Alerts"])
+    tab_overview, tab_live, tab_signal, tab_bots, tab_risk = st.tabs(["Overview", "Live Trading", "Signal Flow", "Bot Health", "Risk & Alerts"])
     with tab_overview:
-        st.markdown("### Overall Performance Till Date")
+        st.markdown("### Performance To Date")
         portfolio_performance_overview(scan, bots)
         if not bots.empty:
             st.markdown("### Individual Bot Performance")
-            bot_view = bots.copy()
-            bot_view["runtime_bucket"] = bot_view["state"].astype(str).map(runtime_bot_category)
-            st.dataframe(
-                bot_view[[col for col in ["name", "strategy", "symbol", "timeframe", "capital", "state", "runtime_bucket", "status_reason", "heartbeat_at"] if col in bot_view]],
-                use_container_width=True,
-                hide_index=True,
-            )
+            individual_bot_performance_meters(bots, scan)
     with tab_live:
         st.markdown("### Live Trading Status")
         if not scan.empty:
@@ -3230,7 +4514,7 @@ def dashboard_screen(summary: dict[str, float | str]) -> None:
         else:
             st.info("No live trading scan rows are available yet.")
     with tab_signal:
-        st.markdown("### SignalFlow Status")
+        st.markdown("### Signal Flow Status")
         if scan.empty:
             st.info("No signal flow rows are available yet.")
         else:
@@ -3239,7 +4523,7 @@ def dashboard_screen(summary: dict[str, float | str]) -> None:
             market_bucket_swim_lanes(scan, bots)
             strategy_traffic_light_panel(scan)
             signal_flow_backtest_panel(scan)
-            st.markdown("#### SignalFlow Pipeline Snapshot")
+            st.markdown("#### Signal Flow Pipeline Snapshot")
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     with tab_bots:
         st.markdown("### Active Bot Summary")
@@ -3440,7 +4724,7 @@ def orderflow_panel(candles: pd.DataFrame, tape: pd.DataFrame) -> go.Figure:
             y=tape["delta"],
             mode="markers",
             marker={"size": np.clip(tape["notional"] / 900, 5, 18), "color": tape["spread_bps"], "colorscale": "Viridis"},
-            name="Tape prints",
+            name="Tape trades",
         )
     )
     return layout_chart(fig, 360)
@@ -3489,7 +4773,7 @@ def live_trading(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None
     feature_files = available_feature_files()
     chart_symbols = list(feature_files)
     if chart_symbols:
-        selected_chart_symbol = st.selectbox("Chart symbol", chart_symbols, index=0, key="live_chart_symbol")
+        selected_chart_symbol = st.selectbox("Coin", chart_symbols, index=0, key="live_chart_symbol")
         chart_data = binance_history_snapshot(str(feature_files[selected_chart_symbol]))
         chart_candles = chart_data["candles"]
         assert isinstance(chart_candles, pd.DataFrame)
@@ -3599,6 +4883,8 @@ def stream_age_text(value: object) -> str:
 
 
 def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
+    st.markdown("### Order Flow")
+    st.caption("Trade tape, spread, depth, and buyer/seller pressure for review. This screen is observational and does not place orders.")
     candles = data["candles"]
     tape = data["tape"]
     book = data["book"]
@@ -3607,10 +4893,17 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     assert isinstance(book, pd.DataFrame)
     scan = load_live_scan()
     symbols = scan["symbol"].astype(str).tolist() if not scan.empty else available_live_symbols()
-    selected = st.selectbox("Crypto", symbols, index=0)
+    selected = st.selectbox("Coin", symbols, index=0)
     selected_row = scan[scan["symbol"].astype(str) == selected].iloc[0] if not scan.empty and selected in set(scan["symbol"].astype(str)) else None
     if selected_row is not None:
         watchlist = orderflow_watchlist(scan)
+        st.markdown(
+            "<div class='decision-summary info'>"
+            "<div class='decision-summary-title'>Order Flow Decision Lens</div>"
+            "<div class='runtime-bot-boundary-meta'>Use this page to confirm whether liquidity, tape aggression, and spread are supportive before runtime deployment or manual review.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         st.markdown(orderflow_guidance(selected_row, watchlist), unsafe_allow_html=True)
         buy_pressure = float(selected_row.get("buy_score", 0.0))
         sell_pressure = float(selected_row.get("sell_score", 0.0))
@@ -3623,7 +4916,7 @@ def orderflow(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
         a.metric("Buy Pressure", f"{buy_pressure:.0f}%")
         b.metric("Sell / Exit Pressure", f"{sell_pressure:.0f}%")
         c.metric("Spread", f"{spread:.2f} bps")
-        d.metric("Trade Velocity", f"{velocity:.0f} prints")
+        d.metric("Trade Velocity", f"{velocity:.0f} trades")
         e, f, g = st.columns(3)
         e.metric("Volume Imbalance", f"{taker_buy:.0f}% taker buy")
         f.metric("Book Imbalance", f"{depth:+.2f}")
@@ -3774,6 +5067,20 @@ def enrich_orderflow_table(tape: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
+def operational_metric_tiles(rows: list[dict[str, str]]) -> None:
+    cards: list[str] = []
+    for row in rows:
+        tone = row.get("tone", "")
+        cards.append(
+            "<div class='metric-tile'>"
+            f"<div class='label'>{html.escape(row.get('label', ''))}</div>"
+            f"<div class='value {html.escape(tone)}'>{html.escape(row.get('value', ''))}</div>"
+            f"<div class='sub'>{html.escape(row.get('sub', ''))}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='metric-tile-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
 def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     summary = data["summary"]
     assert isinstance(summary, dict)
@@ -3781,12 +5088,39 @@ def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     bots = load_bot_instances()
     running = bots[bots["state"].isin(["DEPLOYED", "RUNNING"])] if not bots.empty and "state" in bots else pd.DataFrame()
     exposure = float(running["capital"].sum()) if not running.empty and "capital" in running else 0.0
-    left, mid, right = st.columns(3)
-    left.plotly_chart(risk_gauge("Portfolio Exposure", exposure, float(risk["max_portfolio_exposure"])), use_container_width=True)
-    mid.plotly_chart(risk_gauge("Cash / Trade", float(risk["max_cash_per_trade"]), max(float(risk["capital"]), 1.0)), use_container_width=True)
-    right.plotly_chart(risk_gauge("Trade Window", float(len(running)), float(risk["max_trades_per_window"]), ""), use_container_width=True)
+    exposure_limit = float(risk["max_portfolio_exposure"])
+    capital = max(float(risk["capital"]), 1.0)
+    max_cash = float(risk["max_cash_per_trade"])
+    max_trades = int(risk["max_trades_per_window"])
+    exposure_pct = min(999.0, exposure / max(exposure_limit, 1.0) * 100)
+    cash_pct = min(999.0, max_cash / capital * 100)
+    trade_pct = min(999.0, len(running) / max(max_trades, 1) * 100)
+    st.markdown("### Portfolio Risk Gates")
+    st.caption("Risk limits are shown as plain operating numbers so the runtime cap is unambiguous.")
+    operational_metric_tiles(
+        [
+            {
+                "label": "Portfolio Exposure",
+                "value": f"{money_text(exposure)} / {money_text(exposure_limit)}",
+                "sub": f"{exposure_pct:.1f}% used across {len(running)} running bot(s)",
+                "tone": "good" if exposure_pct < 75 else "warn" if exposure_pct < 100 else "bad",
+            },
+            {
+                "label": "Cash Per Trade",
+                "value": money_text(max_cash),
+                "sub": f"{cash_pct:.1f}% of portfolio capital",
+                "tone": "good" if cash_pct <= 10 else "warn",
+            },
+            {
+                "label": "Trade Window",
+                "value": f"{len(running)} / {max_trades}",
+                "sub": f"{trade_pct:.1f}% of allowed concurrent window",
+                "tone": "good" if trade_pct < 75 else "warn" if trade_pct < 100 else "bad",
+            },
+        ]
+    )
     with st.form("risk_settings"):
-        st.markdown("### Portfolio Risk Gates")
+        st.markdown("#### Edit Risk Limits")
         c1, c2, c3 = st.columns(3)
         capital = c1.number_input("Portfolio capital", min_value=0.0, value=float(risk["capital"]), step=100.0)
         max_cash = c2.number_input("Max cash allocation per trade", min_value=0.0, value=float(risk["max_cash_per_trade"]), step=25.0)
@@ -3796,7 +5130,7 @@ def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
         window = c5.number_input("Window minutes", min_value=1, value=int(risk["trade_window_minutes"]), step=15)
         max_exposure = c6.number_input("Portfolio exposure limit", min_value=0.0, value=float(risk["max_portfolio_exposure"]), step=100.0)
         kill_switch = st.checkbox("Kill switch", value=bool(risk["kill_switch"]))
-        if st.form_submit_button("Save hard risk gates"):
+        if st.form_submit_button("Save risk limits"):
             save_risk_settings(
                 {
                     "profile": "default",
@@ -3809,7 +5143,7 @@ def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
                     "kill_switch": kill_switch,
                 }
             )
-            st.success("Risk gates persisted. Running bots will enforce these before trade placement.")
+            st.success("Risk limits saved. Running bots will enforce these before trade placement.")
     st.dataframe(
         pd.DataFrame(
             [
@@ -3827,18 +5161,18 @@ def risk_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
 
 def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Bot Framework")
-    st.caption("Create and configure bots here. Runtime monitoring lives in Bot Runtime.")
+    st.caption("Design bots here; monitor and control them in Runtime.")
     strategy_ranking_panel()
     available = active_strategy_names()
     dormant = dormant_strategy_names()
     if not available:
         st.error("No active strategy is certified for bot creation. Refresh backtests and promote a deployable strategy first.")
         return
-    st.success("Active for bot creation: " + ", ".join(available))
+    st.success("Available for bot creation: " + ", ".join(available))
     guidance_rows = deployable_strategy_symbol_rows()
     if guidance_rows:
-        st.markdown("#### Deploy Guidance")
-        st.caption("Only create/deploy the strategy and coin pairs that passed the latest production-readiness backtest guidance.")
+        st.markdown("#### Deploy Guidance / Deployment Guidance")
+        st.caption("Use only the strategy and coin pairs that passed the latest production-readiness backtest guidance.")
         st.dataframe(pd.DataFrame(guidance_rows), use_container_width=True, hide_index=True)
     st.markdown("#### Strategy Deployment Defaults")
     st.caption("Bot Creation, Validation Lab, and Runtime inherit these defaults unless the bot definition overrides them.")
@@ -3861,6 +5195,8 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
         use_container_width=True,
         hide_index=True,
     )
+    st.markdown("#### Bot Creation Panel Defaults")
+    st.caption("The creation form below persists strategy defaults, stop-loss, take-profit, trailing, emergency stop, and risk allocation overrides into the bot definition.")
     bot_marketplace_panel(load_bot_instances())
     if dormant:
         with st.expander("Dormant strategy research shelf", expanded=False):
@@ -3877,7 +5213,7 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
     symbols = load_live_scan()["symbol"].astype(str).tolist() or available_live_symbols()
     with st.form("create_bot"):
         c1, c2, c3, c4 = st.columns(4)
-        name = c1.text_input("Bot instance name", value=f"{symbols[0].replace('/', '')} bot" if symbols else "Crypto bot")
+        name = c1.text_input("Bot instance name", value=f"{symbols[0].replace('/', '')} bot" if symbols else "Coin bot")
         primary_strategy = c2.selectbox("Primary strategy", available)
         certified_for_primary = certified_symbols_for_strategy(primary_strategy)
         symbol_options = [symbol for symbol in symbols if not certified_for_primary or symbol in set(certified_for_primary)]
@@ -3894,7 +5230,7 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
         timeframe_index = timeframe_options.index(strategy_default_timeframe) if strategy_default_timeframe in timeframe_options else 1
         timeframe = p3.selectbox("Entry timeframe", timeframe_options, index=timeframe_index)
         defaults = strategy_deployment_defaults(primary_strategy)
-        st.markdown("#### Bot Creation Panel Defaults")
+        st.markdown("#### Bot Creation Defaults")
         d1, d2, d3 = st.columns(3)
         stop_loss_type = d1.selectbox(
             "Stop-loss logic",
@@ -3965,12 +5301,12 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
                 use_container_width=True,
                 hide_index=True,
             )
-    st.info("Lifecycle: create bot here -> backtest in Validation Lab -> deploy/stop in Bot Runtime. Created bots are persisted and become available on the next screens immediately.")
+    st.info("Flow: create a bot here, validate it in Validation Lab, then deploy or stop it in Runtime. Saved bots appear on the next screens immediately.")
 
 
 def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Bot Runtime")
-    st.caption("Live bot operations with portfolio summary, ranked bot tiles, and Binance Testnet mark updates.")
+    st.caption("Live bot cockpit with portfolio summary, ranked bot tiles, and Binance Testnet price updates.")
     bots = load_bot_instances()
     scan = load_live_scan()
     stream = load_live_stream()
@@ -3986,6 +5322,12 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
             "runtime_entry_price",
             "pnl_since_start",
             "pnl_since_start_pct",
+            "runtime_position_state",
+            "last_entry_at",
+            "last_exit_at",
+            "last_trade_event_type",
+            "last_trade_event_at",
+            "last_trade_event_reason",
             "framework_status",
             "supervisor_action",
             "alert_level",
@@ -4012,7 +5354,7 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
 
 def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Bot Admin")
-    st.caption("Runtime command center. Actions go through the shared command bus and runtime manager; this screen does not place exchange orders.")
+    st.caption("Operations command center. Actions go through the shared command bus and runtime manager; this screen does not place exchange orders.")
     manager = RuntimeManager()
     bus = RuntimeCommandBus(manager)
     status = manager.runtime_status()
@@ -4020,7 +5362,7 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
     c1.metric("Runtime", str(status["runtime"]))
     c2.metric("Mode", str(status["runtime_mode"]))
     c3.metric("Running Bots", int(status["running_bots"]))
-    c4.metric("LLM", str(status["llm_state"]).replace("_", " "))
+    c4.metric("AI", str(status["llm_state"]).replace("_", " "))
     c5.metric("Heartbeat", stream_age_text(str(status.get("runtime_heartbeat", ""))))
     with st.expander("Runtime process controls", expanded=True):
         st.caption("Dashboard and headless runtime are independent. Closing the browser does not stop the runtime process.")
@@ -4129,7 +5471,7 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
                     f"protection {state.get('protection_state', 'UNKNOWN')}",
                     f"risk {state.get('risk_state', 'OK')}",
                     f"validation {state.get('validation_status', 'UNKNOWN')}",
-                    f"LLM {state.get('llm_state', 'RULE_BASED')}",
+                    f"AI {state.get('llm_state', 'RULE_BASED')}",
                 ]
                 st.markdown(" ".join(f"<span class='pill'>{chip}</span>" for chip in chips), unsafe_allow_html=True)
                 st.caption(f"Last heartbeat: {state.get('last_heartbeat') or 'pending'}")
@@ -4190,7 +5532,7 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
                     st.query_params["bot_child"] = "Runtime"
                     st.query_params["route"] = BOT_MANAGEMENT_ROUTES["Runtime"]
                     st.rerun()
-                with view_cols[2].popover("LLM HEALTH", use_container_width=True):
+                with view_cols[2].popover("AI Health", use_container_width=True):
                     comment = ReasoningAgent().explain_status(
                         {
                             "spread_bps": 0,
@@ -4204,7 +5546,7 @@ def bot_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
                     st.warning("This removes the saved bot definition from Bot Admin and Bot Runtime. Running bots must be stopped first.")
                     confirm = st.text_input("Type the bot name to confirm", key=f"delete-confirm-{bot_id}")
                     disabled = status_text == "RUNNING" or confirm != str(state.get("name", bot_id))
-                    if st.button("Remove definition", key=f"delete-bot-{bot_id}", type="primary", disabled=disabled, use_container_width=True):
+                if st.button("Remove definition", key=f"delete-bot-{bot_id}", type="primary", disabled=disabled, use_container_width=True):
                         removed = remove_bot_definition(str(state.get("name", bot_id)))
                         if removed:
                             st.success(f"Removed bot definition for {state.get('name', bot_id)}.")
@@ -4423,8 +5765,6 @@ def runtime_marketplace_header(bots: pd.DataFrame, rankings: pd.DataFrame, scan:
         """,
         unsafe_allow_html=True,
     )
-
-
 def runtime_discovery_panel(rankings: pd.DataFrame, scan: pd.DataFrame) -> None:
     picks = rankings.head(3) if not rankings.empty else pd.DataFrame()
     pick_cards: list[str] = []
@@ -4537,6 +5877,8 @@ def runtime_tiles(
         signal = str(rank_row.get("signal", "NO SIGNAL") or "NO SIGNAL")
         instance = runtime_instance_profile(row, scan, matrix)
         health_class = "good" if instance["health_light"] == "Green" else "warn" if instance["health_light"] == "Amber" else "bad"
+        trade_state = str(instance["trade_position_state"])
+        trade_state_class = "good" if trade_state == "IN_TRADE" else "warn" if trade_state == "OUT_OF_TRADE" else "info"
         tile_data = {
             "name": str(row.get("name", "")),
             "state": state,
@@ -4551,7 +5893,11 @@ def runtime_tiles(
             "started_at": str(live_mark["started_at"]),
             "socket_status": str(live_mark["socket_status"]),
             "socket_age": str(live_mark["socket_age"]),
-            "in_market": bool(live_mark["in_market"]),
+            "in_market": bool(instance["in_trade"]),
+            "trade_position_state": str(instance["trade_position_state"]),
+            "trade_position_reason": str(instance["trade_position_reason"]),
+            "last_entry_at": str(instance["last_entry_at"]),
+            "last_exit_at": str(instance["last_exit_at"]),
         }
         with columns[index % len(columns)].container(border=True):
             st.markdown(
@@ -4562,10 +5908,11 @@ def runtime_tiles(
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f"<span class='pill {state_class}'>{state}</span> <span class='pill'>{health}</span> "
-                f"<span class='pill'>score {runtime_score:.1f}</span> <span class='pill'>{signal}</span> "
-                f"<span class='pill {health_class}'>{instance['health_light']} {instance['health_label']}</span> "
-                f"<span class='pill'>supervisor {row.get('supervisor_action', 'NONE')}</span> <span class='pill'>alert {row.get('alert_level', 'INFO')}</span>",
+                f'<span class="pill {state_class}">{html.escape(state)}</span> '
+                f'<span class="pill {trade_state_class}">{html.escape(trade_state)}</span> '
+                f'<span class="pill {health_class}">{html.escape(str(instance["health_light"]))} {html.escape(str(instance["health_label"]))}</span> '
+                f'<span class="pill">score {runtime_score:.1f}</span> '
+                f'<span class="pill">{html.escape(signal)}</span>',
                 unsafe_allow_html=True,
             )
             st.caption(
@@ -4574,27 +5921,35 @@ def runtime_tiles(
             )
             runtime_tile_live_mark_component(tile_data)
             st.info(str(instance["operational_guidance"]))
+            st.caption(f"Trade state: {instance['trade_position_state']} | {instance['trade_position_reason']} | entry {stream_age_text(str(instance['last_entry_at']))} | exit {stream_age_text(str(instance['last_exit_at']))}")
+            st.markdown("<div class='runtime-tile-zone'><div class='runtime-tile-zone-title'>Performance</div>", unsafe_allow_html=True)
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Real-time P&L", money_text(instance["real_time_pnl"]), f"{pct_text(instance['roi_pct'])} ROI")
             m2.metric("Unrealized / Realized", money_text(instance["unrealized_pnl"]), f"{money_text(instance['realized_pnl'])} realized")
-            m3.metric("Runtime Hours", f"{safe_number(instance['runtime_hours']):.2f}", f"started {stream_age_text(str(live_mark['started_at']))}")
+            m3.metric("Runtime", f"{safe_number(instance['runtime_hours']):.2f}h", f"started {stream_age_text(str(live_mark['started_at']))}")
             m4.metric("Exposure", money_text(instance["current_exposure"]), f"{safe_number(instance['capital_utilization_pct']):.1f}% utilized")
             cperf1, cperf2, cperf3, cperf4 = st.columns(4)
             cperf1.metric("Drawdown", pct_text(instance["current_drawdown_pct"]), f"peak {pct_text(instance['peak_drawdown_pct'])}")
             cperf2.metric("Trades", f"{int(instance['trade_count'])}", f"win {safe_number(instance['win_rate']):.1f}%")
             cperf3.metric("Profit Factor", f"{safe_number(instance['profit_factor']):.2f}")
             cperf4.metric("Bucket / State", str(instance["current_bucket"]), str(instance["current_strategy_state"]))
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Quantity Running", f"{safe_number(instance['qty_per_order']):.8f}", f"recommended {safe_number(instance['recommended_quantity']):.8f}")
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("<div class='runtime-tile-zone'><div class='runtime-tile-zone-title'>Risk, Stops, and Timing</div>", unsafe_allow_html=True)
+            s0, s1, s2, s3, s4 = st.columns(5)
+            s0.metric("Trade State", str(instance["trade_position_state"]).replace("_", " "), str(instance["trade_position_reason"])[:42])
+            s1.metric("Position Size", f"{safe_number(instance['qty_per_order']):.8f}", f"recommended {safe_number(instance['recommended_quantity']):.8f}")
             s2.metric("Stop-loss", money_text(instance["current_stop_loss"]), f"{money_text(instance['stop_loss_distance_abs'])} away")
-            s3.metric("SL Distance", pct_text(instance["stop_loss_distance_pct"]), f"R {safe_number(instance['risk_multiple']):.2f}")
-            s4.metric("Signal Time", stream_age_text(str(instance.get("last_signal_at", ""))), f"data {stream_age_text(str(row.get('heartbeat_at', '')))}")
+            s3.metric("Stop Distance", pct_text(instance["stop_loss_distance_pct"]), f"R {safe_number(instance['risk_multiple']):.2f}")
+            s4.metric("Signal Age", stream_age_text(str(instance.get("last_signal_at", ""))), f"data {stream_age_text(str(row.get('heartbeat_at', '')))}")
+            st.markdown("</div>", unsafe_allow_html=True)
             with st.expander("Instance details: context, capital, stops, health", expanded=False):
                 detail_rows = [
                     {"Section": "Identity", "Metric": "Deployment timestamp", "Value": instance["deployment_timestamp"] or "pending"},
                     {"Section": "Identity", "Metric": "Runtime duration", "Value": f"{float(instance['runtime_duration_hours']):.2f} hours"},
+                    {"Section": "Trade State", "Metric": "In/out of trade", "Value": f"{instance['trade_position_state']} | {instance['trade_position_reason']}"},
+                    {"Section": "Trade State", "Metric": "Entry / exit timestamp", "Value": f"{instance['last_entry_at'] or 'pending'} / {instance['last_exit_at'] or 'open'}"},
                     {"Section": "Backtest", "Metric": "ROI / net P&L", "Value": money_text(instance["backtest_roi"])},
-                    {"Section": "Backtest", "Metric": "Max DD / Win / Trades", "Value": f"{pct_text(instance['backtest_max_drawdown'])} / {safe_number(instance['backtest_win_rate']):.1f}% / {int(instance['backtest_trade_count'])}"},
+                    {"Section": "Backtest", "Metric": "Max drawdown / win / trades", "Value": f"{pct_text(instance['backtest_max_drawdown'])} / {safe_number(instance['backtest_win_rate']):.1f}% / {int(instance['backtest_trade_count'])}"},
                     {"Section": "Backtest", "Metric": "Last run / data range", "Value": f"{instance['last_backtest_timestamp']} / {instance['backtest_data_range']}"},
                     {"Section": "Capital", "Metric": "Initial / current / available", "Value": f"{money_text(instance['initial_allocated_capital'])} / {money_text(instance['current_allocated_capital'])} / {money_text(instance['available_unallocated_capital'])}"},
                     {"Section": "Capital", "Metric": "Qty/order / recommended / margin", "Value": f"{float(instance['qty_per_order']):.8f} / {float(instance['recommended_quantity']):.8f} / {float(instance['margin_usage']):.2f}"},
@@ -4702,8 +6057,9 @@ def runtime_tile_live_mark_component(row: dict[str, object]) -> None:
             const current = mark(row);
             const pnlClass = current.pnl >= 0 ? "good" : "bad";
             const pulseClass = row.socket_seen_at ? "live" : "";
+            const tradeState = String(row.trade_position_state || (row.in_market ? "IN_TRADE" : "OUT_OF_TRADE")).replaceAll("_", " ");
             shell.innerHTML = `<div class="rt-value ${{pnlClass}}">${{money(current.pnl)}} <span style="font-size:0.92rem">/ ${{percent(current.pnlPct)}}%</span></div>
-              <div class="rt-meta"><span class="rt-pulse ${{pulseClass}}"></span>PnL since start ${{row.started_at ? ageText(row.started_at) + " ago" : "pending"}} | live ${{price(row.last_price)}} | entry ${{price(row.entry_price)}} | socket ${{socketStatus}} ${{row.socket_seen_at ? ageText(row.socket_seen_at) : row.socket_age}}</div>`;
+              <div class="rt-meta"><span class="rt-pulse ${{pulseClass}}"></span>${{tradeState}} | PnL since start ${{row.started_at ? ageText(row.started_at) + " ago" : "pending"}} | live ${{price(row.last_price)}} | entry ${{price(row.entry_price)}} | socket ${{socketStatus}} ${{row.socket_seen_at ? ageText(row.socket_seen_at) : row.socket_age}}</div>`;
           }}
           function connect() {{
             if (!symbolKey) {{
@@ -4878,7 +6234,7 @@ def trade_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str
     trade_events = load_runtime_trade_events()
     pnl_snapshots = load_runtime_trade_pnl_snapshots()
     alerts = load_runtime_alerts()
-    active, closed, strategy_rows = trade_management_rows(bots, scan, matrix, validation_runs, backtest_trades, order_audit)
+    active, closed, strategy_rows = trade_management_rows(bots, scan, matrix, validation_runs, backtest_trades, order_audit, trade_events)
     persisted_snapshots = persist_trade_pnl_snapshots(active)
     pnl_snapshots = load_runtime_trade_pnl_snapshots()
     summary = trade_management_summary(active, closed, alerts)
@@ -4893,23 +6249,6 @@ def trade_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str
     last_snapshot = ""
     if not pnl_snapshots.empty and "snapshot_time" in pnl_snapshots:
         last_snapshot = str(pnl_snapshots["snapshot_time"].iloc[-1])
-    st.markdown(
-        f"""
-        <div class="trade-panel">
-          <div class="trade-panel-title">
-            <strong>Persistence And Live Refresh</strong>
-            <span class="trade-refresh-note">last persisted snapshot: {last_snapshot or 'pending'} | this refresh wrote {persisted_snapshots} snapshot(s)</span>
-          </div>
-          <div class="trade-health-strip">
-            <div class="trade-health-cell"><div class="label">Execution path</div><div class="value good">Unblocked</div></div>
-            <div class="trade-health-cell"><div class="label">Trade events</div><div class="value">{len(trade_events) if not trade_events.empty else 0}</div></div>
-            <div class="trade-health-cell"><div class="label">PnL snapshots</div><div class="value">{len(pnl_snapshots) if not pnl_snapshots.empty else 0}</div></div>
-            <div class="trade-health-cell"><div class="label">Source of truth</div><div class="value info">Runtime + audit</div></div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     tab_active, tab_analytics, tab_audit, tab_persistence = st.tabs(["Active Desk", "Analytics", "Audit Trail", "Persistence"])
 
@@ -4929,15 +6268,21 @@ def trade_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str
                     "Trade State",
                     "Order State",
                     "Position State",
+                    "Entry Timestamp",
+                    "Exit Timestamp",
                     "Current Price",
                     "Unrealized P&L",
                     "ROI %",
                     "Current Stop-Loss",
                     "Current Take-Profit",
                     "Stop Distance %",
+                    "Market Feed Status",
+                    "Market Feed Age",
+                    "Last Mark Source",
                     "Risk Light",
                     "Guidance",
                 ]
+                trade_management_live_active_grid_component(active)
                 st.dataframe(active[[column for column in active_view_columns if column in active]], use_container_width=True, hide_index=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -5099,7 +6444,24 @@ def trade_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str
             st.caption("No audit or journal timeline rows available yet.")
 
     with tab_persistence:
-        st.markdown("#### Persistence And Scale Notes")
+        st.markdown(
+            f"""
+            <div class="trade-panel">
+              <div class="trade-panel-title">
+                <strong>Persistence And Live Refresh</strong>
+                <span class="trade-refresh-note">last persisted snapshot: {last_snapshot or 'pending'} | this refresh wrote {persisted_snapshots} snapshot(s)</span>
+              </div>
+              <div class="trade-health-strip">
+                <div class="trade-health-cell"><div class="label">Execution path</div><div class="value good">Unblocked</div></div>
+                <div class="trade-health-cell"><div class="label">Trade events</div><div class="value">{len(trade_events) if not trade_events.empty else 0}</div></div>
+                <div class="trade-health-cell"><div class="label">PnL snapshots</div><div class="value">{len(pnl_snapshots) if not pnl_snapshots.empty else 0}</div></div>
+                <div class="trade-health-cell"><div class="label">Source of truth</div><div class="value info">Runtime + audit</div></div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("#### Persistence & Scale Notes")
         st.dataframe(
             pd.DataFrame(
                 [
@@ -5136,32 +6498,143 @@ def journal_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> No
     journal = load_journal_events()
     trades = load_backtest_trades()
     validation_runs = load_validation_runs_frame()
+    analysis = bot_journal_analysis(load_bot_instances(), validation_runs, journal, trades)
+    render_journal_learning_loop(journal, trades, analysis)
     if not trades.empty:
         journal_charts(trades)
-        with st.expander("Historical Trade Journal", expanded=True):
-            st.dataframe(enrich_trade_journal(trades).tail(250), use_container_width=True, hide_index=True)
-    analysis = bot_journal_analysis(load_bot_instances(), validation_runs, journal, trades)
     if not analysis.empty:
-        st.markdown("### Bot Analysis")
-        st.caption("Evidence-based pros, cons, improvement areas, and approval-gated recommendations by bot from validation, journal events, and trade history.")
-        st.caption("Journal analysis can suggest requirements, but it never modifies strategy code or runtime configuration without human approval and revalidation.")
-        st.dataframe(analysis, use_container_width=True, hide_index=True)
+        st.markdown("### Bot Learning Board")
+        st.caption("Visual trader review by bot. Recommendations are approval-gated and never auto-change strategy code or runtime configuration.")
+        st.caption("Journal analysis never modifies strategy code or runtime configuration without human approval and revalidation.")
+        render_journal_analysis_cards(analysis)
+        with st.expander("Detailed bot analysis table", expanded=False):
+            st.dataframe(analysis.astype(str), use_container_width=True, hide_index=True)
     if journal.empty:
         st.info("Live journal is ready. New bot decisions and testnet execution results will append here.")
         return
     journal["event_time"] = pd.to_datetime(journal["event_time"], errors="coerce")
     correlation = correlate_backtest_journal(validation_runs, journal, trades)
     if not correlation.empty:
-        st.markdown("### Backtest To Journal Correlation")
-        st.dataframe(correlation, use_container_width=True, hide_index=True)
-        st.markdown("### Strategy Change Suggestions")
+        st.markdown("### Action Queue")
+        render_journal_action_queue(correlation)
         for suggestion in journal_improvement_suggestions(correlation):
             st.info(suggestion)
         for suggestion in strategy_change_suggestions(correlation):
             st.warning(suggestion)
     counts = journal.groupby("event_type").size().reset_index(name="events").sort_values("events", ascending=False)
     st.plotly_chart(layout_chart(go.Figure(go.Bar(x=counts["event_type"], y=counts["events"], marker_color="#79a7ff")), 280), use_container_width=True)
-    st.dataframe(journal.sort_values("event_time", ascending=False), use_container_width=True, hide_index=True)
+    with st.expander("Raw journal evidence", expanded=False):
+        st.dataframe(journal.sort_values("event_time", ascending=False).astype(str), use_container_width=True, hide_index=True)
+    if not trades.empty:
+        with st.expander("Historical trade journal evidence", expanded=False):
+            st.dataframe(enrich_trade_journal(trades).tail(250).astype(str), use_container_width=True, hide_index=True)
+
+
+def render_journal_analysis_cards(analysis: pd.DataFrame) -> None:
+    cards: list[str] = []
+    for _, row in analysis.head(6).iterrows():
+        score = max(0.0, min(100.0, safe_number(row.get("Outcome Score", 0.0))))
+        tone = str(row.get("Tone", "warn"))
+        priority = html.escape(str(row.get("Learning Priority", "Collect Evidence")))
+        outcome = html.escape(str(row.get("Outcome", "Evidence building")))
+        next_action = html.escape(str(row.get("Next Review Action", row.get("Recommended Change", "Keep monitoring"))))
+        cards.append(
+            f"<div class='journal-card {tone}'>"
+            f"<div class='journal-card-title'>{html.escape(str(row.get('Bot', 'Unknown bot')))}</div>"
+            f"<div class='runtime-bot-boundary-meta'>{html.escape(str(row.get('Strategy', 'Unknown')))} | {html.escape(str(row.get('Symbol', 'Unknown')))} | approval {html.escape(str(row.get('Human Approval Status', 'PENDING')))}</div>"
+            f"<div class='journal-visual-row'>"
+            f"<div class='journal-mini-metric'><div class='label'>Outcome</div><div class='value'>{outcome}</div></div>"
+            f"<div class='journal-mini-metric'><div class='label'>Score</div><div class='value'>{score:.0f}</div></div>"
+            f"<div class='journal-mini-metric'><div class='label'>Priority</div><div class='value'>{priority}</div></div>"
+            f"<div class='journal-mini-metric'><div class='label'>Status</div><div class='value'>{html.escape(str(row.get('Action Status', 'Pending')))}</div></div>"
+            f"</div>"
+            f"<div class='journal-scorebar'><span style='width:{score:.0f}%'></span></div>"
+            f"<div class='journal-action-chip'>{next_action}</div>"
+            f"<div class='journal-card-section'><b>Evidence:</b> {html.escape(str(row.get('Evidence', 'No evidence available.')))}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='journal-card-grid'>{''.join(cards)}</div>", unsafe_allow_html=True)
+
+
+def journal_learning_summary(journal: pd.DataFrame, trades: pd.DataFrame, analysis: pd.DataFrame) -> dict[str, object]:
+    wins = int((pd.to_numeric(trades.get("pnl", pd.Series(dtype=float)), errors="coerce") > 0).sum()) if not trades.empty and "pnl" in trades else 0
+    losses = int((pd.to_numeric(trades.get("pnl", pd.Series(dtype=float)), errors="coerce") <= 0).sum()) if not trades.empty and "pnl" in trades else 0
+    warnings = int(journal.get("severity", pd.Series(dtype=str)).astype(str).isin(["WARN", "ERROR", "CRITICAL"]).sum()) if not journal.empty else 0
+    risk_blocks = int(journal.get("event_type", pd.Series(dtype=str)).astype(str).str.contains("RISK_REJECTION|BLOCK", case=False, na=False).sum()) if not journal.empty else 0
+    pending = int(analysis.get("Human Approval Status", pd.Series(dtype=str)).astype(str).eq("PENDING").sum()) if not analysis.empty else 0
+    avg_score = safe_number(pd.to_numeric(analysis.get("Outcome Score", pd.Series(dtype=float)), errors="coerce").mean() if not analysis.empty else 0.0)
+    if risk_blocks or warnings >= 3 or avg_score < 45:
+        decision = "Review Before Scaling"
+    elif losses > wins and losses > 0:
+        decision = "Tune Exits"
+    elif wins > losses and pending:
+        decision = "Evidence Building"
+    else:
+        decision = "Stable Monitoring"
+    return {
+        "Wins": wins,
+        "Losses": losses,
+        "Warnings": warnings,
+        "Risk Blocks": risk_blocks,
+        "Pending Reviews": pending,
+        "Average Score": avg_score,
+        "Decision": decision,
+    }
+
+
+def render_journal_learning_loop(journal: pd.DataFrame, trades: pd.DataFrame, analysis: pd.DataFrame) -> None:
+    summary = journal_learning_summary(journal, trades, analysis)
+    st.markdown("### Trade Learning Loop")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Outcome Score", f"{safe_number(summary['Average Score']):.0f}/100")
+    c2.metric("Wins / Losses", f"{summary['Wins']} / {summary['Losses']}")
+    c3.metric("Risk Blocks", int(summary["Risk Blocks"]))
+    c4.metric("Warnings", int(summary["Warnings"]))
+    c5.metric("Next Decision", str(summary["Decision"]))
+    if not analysis.empty:
+        view = analysis.copy()
+        view["Outcome Score"] = pd.to_numeric(view["Outcome Score"], errors="coerce").fillna(0.0)
+        fig = go.Figure(
+            go.Bar(
+                x=view["Bot"],
+                y=view["Outcome Score"],
+                marker_color=np.where(view["Outcome Score"] >= 70, "#55d49a", np.where(view["Outcome Score"] >= 45, "#f5b84b", "#ff6f7d")),
+                text=view["Learning Priority"],
+            )
+        )
+        fig.update_yaxes(range=[0, 100], title="Learning score")
+        fig.update_layout(showlegend=False, margin={"l": 20, "r": 20, "t": 20, "b": 45})
+        st.plotly_chart(layout_chart(fig, 285), use_container_width=True)
+
+
+def render_journal_action_queue(correlation: pd.DataFrame) -> None:
+    view = correlation.copy()
+    view["priority_score"] = (
+        pd.to_numeric(view.get("max_drawdown_pct", 0.0), errors="coerce").fillna(0.0)
+        + (1.5 - pd.to_numeric(view.get("profit_factor", 0.0), errors="coerce").fillna(0.0)).clip(lower=0.0) * 10
+        + pd.to_numeric(view.get("risk_blocks", 0), errors="coerce").fillna(0.0) * 5
+    )
+    view = view.sort_values("priority_score", ascending=False)
+    fig = go.Figure(
+        go.Scatter(
+            x=view["profit_factor"],
+            y=view["max_drawdown_pct"],
+            mode="markers+text",
+            text=view["bot_name"],
+            textposition="top center",
+            marker={
+                "size": np.maximum(10, view["priority_score"] + 8),
+                "color": view["priority_score"],
+                "colorscale": [[0, "#55d49a"], [0.5, "#f5b84b"], [1, "#ff6f7d"]],
+                "showscale": False,
+            },
+        )
+    )
+    fig.update_xaxes(title="Profit factor")
+    fig.update_yaxes(title="Max drawdown %")
+    st.plotly_chart(layout_chart(fig, 330), use_container_width=True)
+    action_cols = ["bot_name", "symbol", "profit_factor", "max_drawdown_pct", "risk_blocks", "suggestion"]
+    st.dataframe(view[[column for column in action_cols if column in view]].head(10), use_container_width=True, hide_index=True)
 
 
 def metric_from_validation_row(row: pd.Series, key: str, default: float = 0.0) -> float:
@@ -5263,6 +6736,28 @@ def bot_journal_analysis(bots: pd.DataFrame, validation_runs: pd.DataFrame, jour
             pros.append("bot is tracked with persistent journal evidence")
         if not improvements:
             improvements.append("keep parameters stable and collect more live journal events")
+        outcome_score = 50.0
+        outcome_score += 20.0 if net_pnl > 0 else -15.0 if total_trades > 0 else -10.0
+        outcome_score += 15.0 if pf >= 1.5 else -12.0 if pf and pf < 1.3 else 0.0
+        outcome_score += 10.0 if win_rate >= 45 else -8.0 if win_rate and win_rate < 40 else 0.0
+        outcome_score += 10.0 if 0 < max_dd < 8 else -15.0 if max_dd >= 12 else 0.0
+        outcome_score -= min(20.0, risk_blocks * 5.0 + warnings * 3.0)
+        outcome_score = max(0.0, min(100.0, outcome_score))
+        if outcome_score >= 72:
+            outcome = "Working"
+            tone = "good"
+            priority = "Low"
+            next_action = "Keep stable; collect live evidence"
+        elif outcome_score >= 45:
+            outcome = "Watch"
+            tone = "warn"
+            priority = "Medium"
+            next_action = short_join(improvements)
+        else:
+            outcome = "Fix First"
+            tone = "bad"
+            priority = "High"
+            next_action = short_join(improvements)
         weakness = short_join(cons if cons else ["No major weakness identified yet"])
         recommendation = short_join(improvements)
         expected_benefit = "Better drawdown control and cleaner deployment evidence" if cons else "More confidence from additional live evidence"
@@ -5281,6 +6776,12 @@ def bot_journal_analysis(bots: pd.DataFrame, validation_runs: pd.DataFrame, jour
                 "Cons": short_join(cons),
                 "Areas of Improvement": short_join(improvements),
                 "Evidence": f"validation trades {total_trades}; journal events {len(bot_journal)}; PF {pf:.2f}; win {win_rate:.1f}%; DD {max_dd:.1f}%",
+                "Outcome": outcome,
+                "Outcome Score": round(outcome_score, 1),
+                "Learning Priority": priority,
+                "Tone": tone,
+                "Next Review Action": next_action,
+                "Action Status": "Needs Approval" if cons else "Monitor",
                 "Weakness Identified": weakness,
                 "Recommended Change": recommendation,
                 "Expected Benefit": expected_benefit,
@@ -5321,7 +6822,7 @@ def correlate_backtest_journal(validation_runs: pd.DataFrame, journal: pd.DataFr
                 "profit_factor": float(run.get("profit_factor", 0.0) or 0.0),
                 "win_rate": float(run.get("win_rate", 0.0) or 0.0),
                 "max_drawdown_pct": float(run.get("max_drawdown_pct", 0.0) or 0.0),
-                "consecutive_losses": int(run.get("consecutive_losses", 0) or 0),
+                "consecutive_losses": int(safe_number(run.get("consecutive_losses", 0), 0.0)),
                 "journal_events": int(len(related_journal)),
                 "validation_events": validation_events,
                 "risk_blocks": risk_blocks,
@@ -5341,7 +6842,7 @@ def improvement_suggestion_for_row(row: pd.Series, risk_blocks: int, losing_trad
         suggestions.append("review exit logic, stop distance, and spread filter")
     if float(row.get("win_rate", 0.0) or 0.0) < 40:
         suggestions.append("raise entry confidence and orderflow confirmation thresholds")
-    if int(row.get("consecutive_losses", 0) or 0) >= 3:
+    if int(safe_number(row.get("consecutive_losses", 0), 0.0)) >= 3:
         suggestions.append("add a consecutive-loss cooldown")
     if risk_blocks:
         suggestions.append("align bot capital and frequency with Risk screen hard gates")
@@ -5458,6 +6959,7 @@ def validation_screen() -> None:
                     {"Metric": "Recommended capital allocation", "Value": f"${float(selected_defaults['minimum_recommended_capital']):,.2f} minimum | {selected_defaults['capital_allocation_model']}"},
                     {"Metric": "Runtime compatibility checks", "Value": selected_defaults["runtime_profile"]},
                     {"Metric": "Risk classification", "Value": selected_defaults["risk_classification"]},
+                    {"Metric": "Deployment validation output", "Value": "deployment_readiness is persisted after each validation run."},
                 ]
             ),
             use_container_width=True,
@@ -5509,7 +7011,7 @@ def validation_screen() -> None:
             "validation/backtest completed; " + strategy_change_suggestion_for_metrics(metrics_result),
             validation_row["metrics"],
         )
-        st.info(f"Deployment validation output: {readiness}")
+        st.info(f"Deployment readiness: {readiness}")
         show_validation_result(metrics_result, trades)
     runs = load_validation_runs_frame()
     if runs.empty:
@@ -5529,7 +7031,7 @@ def validation_screen() -> None:
     a, b, c, d, e = st.columns(5)
     a.metric("Sharpe", f"{metrics.sharpe:.2f}")
     b.metric("Profit Factor", f"{metrics.profit_factor:.2f}")
-    c.metric("Max DD", f"{metrics.max_drawdown_pct:.1f}%")
+    c.metric("Max Drawdown", f"{metrics.max_drawdown_pct:.1f}%")
     d.metric("Determinism", f"{metrics.replay_determinism:.0f}%")
     e.metric("Risk Violations", f"{metrics.risk_violations}")
     if report.reasons:
@@ -5598,7 +7100,7 @@ def show_validation_result(metrics: dict[str, object], trades: pd.DataFrame) -> 
     cols[1].metric("Win Rate", f"{float(metrics.get('win_rate', 0.0)):.1f}%")
     cols[2].metric("Profit Factor", f"{float(metrics.get('profit_factor', 0.0)):.2f}")
     cols[3].metric("Net PnL", f"${float(metrics.get('net_pnl', 0.0)):,.2f}")
-    cols[4].metric("Max DD", f"{float(metrics.get('max_drawdown_pct', 0.0)):.1f}%")
+    cols[4].metric("Max Drawdown", f"{float(metrics.get('max_drawdown_pct', 0.0)):.1f}%")
     if not trades.empty:
         journal_charts(trades.assign(exit_time=pd.to_datetime(trades["exit_time"], errors="coerce")))
         st.dataframe(enrich_trade_journal(trades), use_container_width=True, hide_index=True)
@@ -5663,6 +7165,8 @@ SCREEN_OPTIONS = [
     "RISK",
     "SYSTEM HEALTH",
     "TRADE MANAGEMENT",
+    "USER ADMIN",
+    "MY PROFILE",
 ]
 
 
@@ -5746,9 +7250,231 @@ def clear_bot_management_child() -> None:
     st.rerun()
 
 
+def current_user_context():
+    return st.session_state.get("auth_context")
+
+
+def requires_password_change() -> bool:
+    context = current_user_context()
+    return bool(context and getattr(context, "force_password_change", False))
+
+
+def allowed_screen_options_for_context(context) -> list[str]:
+    if context is None:
+        return []
+    allowed = [option for option in SCREEN_OPTIONS if can_access_screen(context, option)]
+    roles = set(getattr(context, "roles", ()) or ())
+    fallback: list[str] = []
+    if "ADMIN" in roles:
+        fallback = SCREEN_OPTIONS.copy()
+    elif "POWER_USER" in roles:
+        fallback = ["DASHBOARD", "BOT MANAGEMENT", "JOURNAL", "TRADE MANAGEMENT", "MY PROFILE"]
+    elif "BASIC_USER" in roles:
+        fallback = ["DASHBOARD", "MY PROFILE"]
+    for option in fallback:
+        if option in SCREEN_OPTIONS and option not in allowed:
+            allowed.append(option)
+    if "MY PROFILE" not in allowed:
+        allowed.append("MY PROFILE")
+    return allowed
+
+
+def user_avatar(email: str) -> tuple[str, str]:
+    cleaned = (email or "user").strip().lower()
+    digest = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+    palette = ["#79a7ff", "#55d49a", "#f0c86a", "#ff8b95", "#8bd4e8", "#b9a7ff"]
+    color = palette[int(digest[:2], 16) % len(palette)]
+    local = cleaned.split("@", 1)[0]
+    parts = [part for part in local.replace(".", " ").replace("_", " ").replace("-", " ").split() if part]
+    if len(parts) >= 2:
+        initials = (parts[0][0] + parts[1][0]).upper()
+    else:
+        initials = (local[:2] or "U").upper()
+    return initials, color
+
+
+def account_status_bar() -> None:
+    context = current_user_context()
+    if context is None:
+        return
+    initials, color = user_avatar(str(context.email))
+    col_info, col_profile, col_logout = st.columns([6.2, 1.25, 1.1])
+    with col_info:
+        st.markdown(
+            f"""
+            <div class="account-strip">
+              <div class="account-left">
+                <div class="user-avatar" style="background:{color};">{html.escape(initials)}</div>
+                <div>
+                  <div class="account-name">{html.escape(str(context.email))}</div>
+                  <div class="account-meta">Tier {html.escape(str(context.subscription_tier))} | Roles {html.escape(", ".join(context.roles))}</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_profile:
+        if st.button("My Profile", key="account-my-profile", use_container_width=True, disabled=page == "MY PROFILE"):
+            open_root_screen("MY PROFILE")
+    with col_logout:
+        if st.button("Logout", key="account-logout", use_container_width=True):
+            try:
+                import asyncio
+
+                asyncio.run(_logout_user_from_db(context.session_token))
+            except Exception as exc:
+                logger.warning("logout_failed fallback=local error=%s", exc)
+            st.session_state.pop("auth_context", None)
+            st.rerun()
+    if getattr(context, "force_password_change", False):
+        st.warning("Password change required before accessing the platform.")
+
+
+def app_banner() -> None:
+    st.markdown(
+        f"""
+        <div class="app-banner">
+          <a class="app-home-link" href="?screen=DASHBOARD" target="_self" aria-label="Go to home dashboard" title="Home">
+            <div class="app-emblem">MT</div>
+          </a>
+          <div>
+            <div class="app-title">mytradingmind.ai</div>
+            <div class="app-subtitle">Version {APP_VERSION} | Global trading operations dashboard. Visibility lives here; heavy bot controls stay inside Bot Management.</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def public_login_landing() -> None:
+    st.markdown(
+        f"""
+        <div class="public-hero">
+          <h1>State-of-the-art bot trading operations</h1>
+          <p>
+            A state-of-the-art bot trading operations system built for disciplined strategy research,
+            certified deployment, live runtime monitoring, risk-gated execution, and bot-wise journal learning.
+            Access is role-based so every user sees only the tools, bots, and performance data they are approved to use.
+          </p>
+        </div>
+        <div class="public-proof-grid">
+          <div class="public-proof"><b>Signal Intelligence</b><span>Market data, regime checks, strategy confirmation, and risk readiness move through one auditable flow.</span></div>
+          <div class="public-proof"><b>Certified Bots</b><span>Deployable bots pass backtesting, validation, stress review, and human approval before runtime use.</span></div>
+          <div class="public-proof"><b>Runtime Cockpit</b><span>Running bots expose live P&L, stop levels, health, heartbeat, and recovery state in one operating surface.</span></div>
+          <div class="public-proof"><b>Enterprise Controls</b><span>MariaDB persistence, RBAC, audit trail, subscriptions, and bootstrap security protect multi-user operations.</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    image_path = Path("docs/assets/mytradingmind-highlevel-flow.svg")
+    if image_path.exists():
+        st.image(
+            str(image_path),
+            caption="High-level flow: market data becomes ranked signals, passes risk gates, runs through bots, and improves through journal learning.",
+            use_container_width=True,
+        )
+    st.caption("Use the left access panel to sign in or request registration.")
+
+
+def user_profile_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
+    context = current_user_context()
+    st.markdown("### My Profile")
+    if context is None:
+        st.info("Sign in from the login panel to view profile, subscription, P&L, and user-scoped trades.")
+        st.markdown("#### Subscription")
+        st.write("BASIC_USER can browse the platform. POWER_USER unlocks premium bot capabilities after validation gates.")
+        return
+    st.caption("Your data is isolated to your signed-in workspace.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Email", context.email)
+    c2.metric("Tier", context.subscription_tier)
+    c3.metric("Roles", ", ".join(context.roles))
+    c4.metric("Workspace", context.tenant_id[-8:])
+    st.markdown("#### Password")
+    if getattr(context, "force_password_change", False):
+        st.warning("Temporary password in use. Set a permanent password to unlock the rest of the platform.")
+    if getattr(context, "session_token", "") and "auth_password_changed" in st.session_state:
+        st.success("Password changed successfully. Use the new password on your next login.")
+    with st.container(border=True):
+        st.caption("Passwords are never stored or logged in plain text.")
+        current_password = st.text_input("Current password", type="password", key="profile-current-password")
+        new_password = st.text_input("New password", type="password", key="profile-new-password")
+        confirm_password = st.text_input("Confirm new password", type="password", key="profile-confirm-password")
+        password_ready = bool(current_password and new_password and confirm_password)
+        if st.button("Change Password", key="profile-change-password", use_container_width=True, disabled=not password_ready):
+            if len(new_password) < 12:
+                st.warning("New password must be at least 12 characters.")
+            elif new_password != confirm_password:
+                st.warning("New password and confirmation do not match.")
+            else:
+                try:
+                    import asyncio
+
+                    asyncio.run(_change_user_password_from_db(context.user_id, current_password, new_password))
+                    st.session_state["auth_context"] = replace(context, force_password_change=False)
+                    st.session_state["auth_password_changed"] = True
+                    st.query_params["screen"] = "DASHBOARD" if can_access_screen(st.session_state["auth_context"], "DASHBOARD") else "MY PROFILE"
+                    st.success("Password changed successfully.")
+                    st.rerun()
+                except Exception as exc:
+                    st.warning(f"Password change failed: {exc}")
+    bots = load_bot_instances()
+    ranked = bots.head(2) if not bots.empty else pd.DataFrame()
+    st.markdown("#### Bot Access")
+    if ranked.empty:
+        st.warning("No certified bots are available yet.")
+    else:
+        st.dataframe(ranked[["name", "strategy", "symbol", "timeframe", "state"]], use_container_width=True, hide_index=True)
+    st.markdown("#### Performance & Trades")
+    trades = load_top10_replay_trades()
+    if trades.empty:
+        st.info("No user-specific trade history is available yet.")
+    else:
+        st.dataframe(trades.head(100), use_container_width=True, hide_index=True)
+        st.download_button(
+            "Export CSV",
+            trades.to_csv(index=False),
+            file_name=f"mytradingmind_trades_{context.user_id}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    st.markdown("#### Billing")
+    st.info("Payment integration is pending. Subscription events are already audit-ready.")
+
+
+def user_admin_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
+    context = current_user_context()
+    st.markdown("### User Admin")
+    if not can_access_screen(context, "USER ADMIN"):
+        st.error("Admin access is required for user, role, and subscription administration.")
+        return
+    st.caption("Role and security bootstrap status. Role editing uses persisted tables; advanced editors can be added without changing the schema.")
+    try:
+        import asyncio
+
+        summary = asyncio.run(_security_summary_from_db())
+    except Exception as exc:
+        st.warning(f"Security schema summary unavailable: {exc}")
+        summary = {}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Users", summary.get("users", 0))
+    c2.metric("Roles", summary.get("roles", 0))
+    c3.metric("Permissions", summary.get("permissions", 0))
+    c4.metric("Sessions", summary.get("sessions", 0))
+    rows = [
+        {"Role": "BASIC_USER", "Capability": "Profile and subscription viewing; premium bot execution gated."},
+        {"Role": "POWER_USER", "Capability": "Premium bot access, top two bots included, own P&L/trade export."},
+        {"Role": "ADMIN", "Capability": "Full RBAC, subscription, user, runtime, and emergency controls."},
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.info("Bootstrap credentials are hash-only, max three attempts, single-use, and expiry-bound.")
+
+
 def bot_management_landing(status: dict[str, object], bots: pd.DataFrame) -> None:
     st.markdown("#### Bot Management")
-    st.caption("Choose a subscreen from the Bot Management section in the navigation panel.")
+    st.caption("Choose a screen from Bot Management in the navigation panel.")
     children = list(BOT_MANAGEMENT_ROUTES)
     columns = st.columns(4)
     running = int(status.get("running_bots", 0) or 0)
@@ -5777,7 +7503,7 @@ def bot_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]
     c3.metric("Runtime", str(status.get("runtime", "UNKNOWN")))
     c4.metric("Validation", "ready")
     st.markdown(
-        " > Lifecycle: **Framework** builds bots, **Runtime** monitors execution, **Admin** controls operations, "
+        " > Flow: **Framework** builds bots, **Runtime** monitors execution, **Admin** controls operations, "
         "and **Validation Lab** certifies deployment readiness."
     )
 
@@ -5801,52 +7527,132 @@ def bot_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]
 
 
 with st.sidebar:
-    st.title("mytradingmind.ai")
-    st.caption(f"v{APP_VERSION}")
+    context = current_user_context()
     feature_files = available_feature_files()
     selectable_symbols = list(feature_files)
     requested_screen = st.query_params.get("screen", "")
     requested_route = st.query_params.get("route", "")
     requested_bot_child = st.query_params.get("bot_child", "")
-    requested_screen, requested_bot_child = resolve_screen_request(
-        requested_screen,
-        requested_route,
-        requested_bot_child,
-        getattr(st.context, "url", ""),
-    )
-    screen_index = SCREEN_OPTIONS.index(requested_screen) if requested_screen in SCREEN_OPTIONS else 0
-    page = SCREEN_OPTIONS[screen_index]
-    if requested_screen == "BOT MANAGEMENT" and "bot_management_nav_expanded" not in st.session_state:
-        st.session_state["bot_management_nav_expanded"] = True
-    for option in SCREEN_OPTIONS:
-        active = option == page
-        label = f"{option} active" if active else option
-        if option == "BOT MANAGEMENT":
-            expanded = bool(st.session_state.get("bot_management_nav_expanded", False))
-            prefix = "v" if expanded else ">"
-            parent_label = f"{prefix} {label}"
-            if st.button(parent_label, key=f"nav-screen-{option}", use_container_width=True):
-                toggle_bot_management_nav(active)
-        elif st.button(label, key=f"nav-screen-{option}", use_container_width=True, disabled=active):
-            open_root_screen(option)
-        if option == "BOT MANAGEMENT" and bool(st.session_state.get("bot_management_nav_expanded", False)):
-            for child in BOT_MANAGEMENT_ROUTES:
-                child_active = requested_bot_child == child
-                child_label = f"  {child} active" if child_active else f"  {child}"
-                if st.button(
-                    child_label,
-                    key=f"nav-bot-management-child-{child}",
-                    use_container_width=True,
-                    disabled=child_active,
-                ):
-                    open_bot_management_child(child)
-    st.divider()
+    if context is None:
+        requested_screen = "DASHBOARD"
+        requested_bot_child = ""
+        page = "DASHBOARD"
+        st.markdown(
+            """
+            <div class="sidebar-panel">
+              <div class="sidebar-panel-title">Access</div>
+              <div class="sidebar-panel-text">Sign in here. Registration is available as a compact request popup.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.popover("Login", use_container_width=True):
+            st.caption("Access your role-based trading workspace.")
+            side_login_email = st.text_input("Email", key="sidebar-login-email")
+            side_login_password = st.text_input("Password", type="password", key="sidebar-login-password")
+            side_login_captcha = st.text_input("CAPTCHA", key="sidebar-login-captcha") if settings.captcha_required else ""
+            if st.button("Sign in", key="sidebar-login-submit", use_container_width=True):
+                try:
+                    import asyncio
+
+                    st.session_state["auth_context"] = asyncio.run(_login_user_from_db(side_login_email, side_login_password, side_login_captcha))
+                    st.query_params["screen"] = "DASHBOARD"
+                    st.rerun()
+                except Exception as exc:
+                    st.warning(f"Login unavailable: {exc}")
+        with st.popover("Register", use_container_width=True):
+            st.caption("Request activation for a new workspace.")
+            side_name = st.text_input("Name", key="sidebar-register-name")
+            side_email = st.text_input("Email", key="sidebar-register-email")
+            side_captcha = st.text_input("CAPTCHA", key="sidebar-register-captcha") if settings.captcha_required else ""
+            if st.button("Request activation", key="sidebar-register-submit", use_container_width=True):
+                try:
+                    import asyncio
+
+                    token = asyncio.run(_register_user_from_db(side_name, side_email, side_captcha))
+                    st.success("Activation request recorded.")
+                    st.caption(f"Development activation token: `{token}`")
+                except Exception as exc:
+                    st.warning(f"Registration unavailable: {exc}")
+        st.caption("Operational menu unlocks after login.")
+    else:
+        st.markdown(
+            """
+            <div class="sidebar-panel">
+              <div class="sidebar-panel-title">Operations</div>
+              <div class="sidebar-panel-text">Bot Management expands on first click and collapses on second click.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Signed in: {getattr(context, 'email', 'user')}")
+        requested_screen, requested_bot_child = resolve_screen_request(
+            requested_screen,
+            requested_route,
+            requested_bot_child,
+            getattr(st.context, "url", ""),
+        )
+        allowed_options = allowed_screen_options_for_context(context)
+        if requires_password_change():
+            allowed_options = [option for option in allowed_options if option == "MY PROFILE"] or ["MY PROFILE"]
+            requested_screen = "MY PROFILE"
+            requested_bot_child = ""
+        if requested_screen not in allowed_options:
+            requested_screen = allowed_options[0] if allowed_options else "MY PROFILE"
+            requested_bot_child = ""
+        page = requested_screen
+        if not allowed_options:
+            st.warning("No screens are assigned to this role yet.")
+        if requested_screen == "BOT MANAGEMENT" and "bot_management_nav_expanded" not in st.session_state:
+            st.session_state["bot_management_nav_expanded"] = True
+        for option in allowed_options:
+            active = option == page
+            label = f"{option} active" if active else option
+            if option == "BOT MANAGEMENT":
+                expanded = bool(st.session_state.get("bot_management_nav_expanded", False))
+                prefix = "v" if expanded else ">"
+                parent_label = f"{prefix} {label}"
+                if st.button(parent_label, key=f"nav-screen-{option}", use_container_width=True):
+                    toggle_bot_management_nav(active)
+            elif st.button(label, key=f"nav-screen-{option}", use_container_width=True, disabled=active):
+                open_root_screen(option)
+            if option == "BOT MANAGEMENT" and bool(st.session_state.get("bot_management_nav_expanded", False)):
+                for child in BOT_MANAGEMENT_ROUTES:
+                    child_active = requested_bot_child == child
+                    child_label = f"  {child} active" if child_active else f"  {child}"
+                    if st.button(
+                        child_label,
+                        key=f"nav-bot-management-child-{child}",
+                        use_container_width=True,
+                        disabled=child_active,
+                    ):
+                        open_bot_management_child(child)
+        st.divider()
     default_symbol = selectable_symbols[0] if selectable_symbols else ""
     data_file = feature_files.get(default_symbol, Path("__missing_feature_file__"))
-    st.caption("Live prices update inside the ticker only; the page itself does not auto-refresh.")
-    st.caption("Mode: Binance Spot Testnet live scan with Binance one-year candle backtest.")
+    if context is not None:
+        st.caption("Live prices update inside the ticker only; the page itself does not auto-refresh.")
+        st.caption("Mode: Binance Spot Testnet live scan with Binance one-year candle backtest.")
 
 log_diagnostic(logger, "dashboard_page_selected", page=page)
+
+app_banner()
+
+if current_user_context() is None:
+    public_login_landing()
+    st.stop()
+
+if not can_access_screen(current_user_context(), page):
+    st.error("Access is not available for your current role or subscription.")
+    st.info("Use My Profile for account status or ask an administrator to update RBAC access.")
+    st.stop()
+
+if requires_password_change() and page != "MY PROFILE":
+    st.error("Password change required before accessing the platform.")
+    st.info("Open My Profile and set a permanent password.")
+    st.stop()
+
+account_status_bar()
 
 if not data_file.exists():
     logger.error("dashboard_missing_data_file path=%s", data_file)
@@ -5859,7 +7665,6 @@ assert isinstance(summary, dict)
 if page == "DASHBOARD":
     dashboard_screen(summary)
 else:
-    st.markdown(f"# mytradingmind.ai Ops Console v{APP_VERSION}")
     st.markdown("<div class='subtle'>Binance Spot Testnet live scan with one-year Binance candle backtest and strategy performance tiles.</div>", unsafe_allow_html=True)
     status_row(summary)
 
@@ -5875,3 +7680,7 @@ elif page == "TRADE MANAGEMENT":
     trade_management_screen(data)
 elif page == "JOURNAL":
     journal_screen(data)
+elif page == "MY PROFILE":
+    user_profile_screen(data)
+elif page == "USER ADMIN":
+    user_admin_screen(data)

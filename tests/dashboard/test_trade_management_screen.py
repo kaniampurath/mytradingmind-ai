@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from aegis_trader.dashboards.app import trade_lifecycle_state, trade_management_summary
+from aegis_trader.dashboards.app import trade_event_timestamps, trade_lifecycle_state, trade_management_summary
 from aegis_trader.dashboards.app import merge_bot_frames
 
 
@@ -77,6 +77,32 @@ def test_trade_management_summary_is_nan_safe() -> None:
     assert summary["Alerts"] == 1
 
 
+def test_trade_event_timestamps_derive_entry_and_exit_from_runtime_events() -> None:
+    events = pd.DataFrame(
+        [
+            {
+                "bot_id": "bot-1",
+                "bot_name": "ATR Bot",
+                "trade_id": "bot-1:BTC/USDT:5m",
+                "event_type": "TradeEntered",
+                "event_time": "2026-05-24T08:00:00+00:00",
+            },
+            {
+                "bot_id": "bot-1",
+                "bot_name": "ATR Bot",
+                "trade_id": "bot-1:BTC/USDT:5m",
+                "event_type": "TradeExited",
+                "event_time": "2026-05-24T10:15:00+00:00",
+            },
+        ]
+    )
+
+    timestamps = trade_event_timestamps(events, "bot-1", "ATR Bot", "bot-1:BTC/USDT:5m")
+
+    assert timestamps["entry_timestamp"].startswith("2026-05-24T08:00:00")
+    assert timestamps["exit_timestamp"].startswith("2026-05-24T10:15:00")
+
+
 def test_trade_management_reuses_existing_sources_without_new_master_trade_table() -> None:
     text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
     screen_body = text[text.index("def trade_management_screen") : text.index("def critical_log_events")]
@@ -98,9 +124,15 @@ def test_trade_management_uses_live_numbers_without_page_refresh() -> None:
     assert "calm_auto_refresh(10)" not in screen_body
     assert "trade_management_live_summary_component" in screen_body
     assert "trade_management_live_analytics_component(active)" in screen_body
+    assert "trade_management_live_active_grid_component(active)" in screen_body
     assert "Page does not auto-refresh" in text
     assert "Live Runtime Analytics" in text
     assert "streaming live analytics" in text
+    assert "Active marks update in place" in text
+    assert "Entry Timestamp" in screen_body
+    assert "Exit Timestamp" in screen_body
+    assert "Market Feed Status" in screen_body
+    assert "Last Mark Source" in screen_body
     assert "st.tabs" in screen_body
     assert "Active Desk" in screen_body
     assert "Audit Trail" in screen_body

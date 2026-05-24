@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, inspect, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -71,8 +71,50 @@ async def create_schema(database_url: str | None = None) -> None:
     engine = build_engine(raw_url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_bot_instance_runtime_columns(conn)
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        from aegis_trader.security.auth import bootstrap_security_defaults
+
+        await bootstrap_security_defaults(session)
     await engine.dispose()
     log_diagnostic(logger, "database_schema_create_complete", schema=settings.database_schema, tables=len(Base.metadata.tables))
+
+
+async def _ensure_bot_instance_runtime_columns(conn) -> None:
+    """Additive compatibility shim for v1.2 runtime CAGR fields.
+
+    SQLAlchemy create_all creates missing tables but does not mutate existing
+    tables. These columns are intentionally additive and nullable/defaulted so
+    older deployments can restart without manual SQL.
+    """
+
+    dialect = conn.dialect.name
+    table_name = "myts_bot_table_bot_instances"
+    schema = settings.database_schema if dialect.startswith("mysql") and settings.database_schema else None
+    existing = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns(table_name, schema=schema)})
+    column_defs = {
+        "bot_id": "VARCHAR(120) NULL",
+        "cumulative_started_at": "DATETIME NULL",
+        "cumulative_realized_pnl": "FLOAT DEFAULT 0",
+        "cumulative_fees": "FLOAT DEFAULT 0",
+        "cumulative_slippage": "FLOAT DEFAULT 0",
+        "cumulative_trade_count": "INTEGER DEFAULT 0",
+        "last_entry_at": "DATETIME NULL",
+        "last_exit_at": "DATETIME NULL",
+        "runtime_position_state": "VARCHAR(32) DEFAULT 'OUT_OF_TRADE'",
+        "last_trade_event_type": "VARCHAR(64) DEFAULT ''",
+        "last_trade_event_at": "DATETIME NULL",
+        "last_trade_event_reason": "TEXT",
+    }
+    qualified = f"`{_mysql_identifier(schema)}`.`{table_name}`" if schema else table_name
+    for column, definition in column_defs.items():
+        if column in existing:
+            continue
+        if dialect.startswith("mysql"):
+            await conn.execute(text(f"ALTER TABLE {qualified} ADD COLUMN `{column}` {definition}"))
+        else:
+            await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} {definition}"))
 
 
 def normalize_async_database_url(database_url: str) -> str:

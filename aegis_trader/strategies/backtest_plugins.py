@@ -11,6 +11,13 @@ from aegis_trader.analytics.replay_metrics import (
     SymbolMetrics,
     Trade,
 )
+from aegis_trader.strategies.aapif import (
+    AAPIFCertificationState,
+    AAPIFRegime,
+    AegisAdaptivePortfolioOrchestrator,
+    ExecutionRealismModel,
+    MarketRegimeClassifier,
+)
 from aegis_trader.strategies.exits import (
     DailyExitConfig,
     five_min_atr_burst_params,
@@ -1188,6 +1195,235 @@ class CertifiedRiskManagedCompositeStrategy(BacktestStrategy):
         )
 
 
+class InstitutionalEvolutionMixin:
+    activation_state = "DORMANT"
+    certification_state = AAPIFCertificationState.SHADOW_MODE.value
+    shadow_validation_mode = True
+    baseline_strategy_name: str = ""
+    protected_baseline = True
+    activation_reason = "AAPIF cloned institutional evolution: shadow validation only until replay, execution realism, survivability, portfolio contribution, and human certification gates pass."
+    execution_fragility_limit = 0.72
+    allowed_regimes: tuple[AAPIFRegime, ...] = tuple(AAPIFRegime)
+
+    _aapif_regime_classifier = MarketRegimeClassifier()
+    _aapif_execution_model = ExecutionRealismModel()
+
+    def _institutional_shadow_allows(self, row: pd.Series, previous: pd.Series | None) -> tuple[bool, str]:
+        regime = self._aapif_regime_classifier.classify_row(row, previous)
+        execution = self._aapif_execution_model.estimate(row)
+        if regime.regime not in self.allowed_regimes:
+            return False, f"AAPIF shadow block: regime {regime.regime} not mapped to {self.name}"
+        if execution.execution_fragility_score > self.execution_fragility_limit:
+            return False, f"AAPIF shadow block: execution fragility {execution.execution_fragility_score:.2f}"
+        return True, f"AAPIF shadow approved: {regime.regime}; degradation {execution.live_backtest_degradation_bps:.1f} bps"
+
+
+class AAMX5InstitutionalStrategy(InstitutionalEvolutionMixin, KCJATRTrendBurstParityStrategy):
+    name = "Aegis Adaptive Momentum Expansion Engine (AAMX-5)"
+    description = "AAPIF clone of KCJ ATR Trend Burst for institutional momentum expansion, volatility breakout, and shadow portfolio validation."
+    baseline_strategy_name = "KCJ ATR Trend Burst 5m"
+    default_timeframe = "5m"
+    max_hold_bars = 288
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.VOLATILITY_BREAKOUT, AAPIFRegime.RISK_ON)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ASVR1HInstitutionalStrategy(InstitutionalEvolutionMixin, TradingViewMeanReversionAtr1hStrategy):
+    name = "Aegis Statistical Volatility Reversion Engine (ASVR-1H)"
+    description = "AAPIF clone of TradingView Mean Reversion ATR 1h for volatility exhaustion, normalization, and reversion shadow validation."
+    baseline_strategy_name = "TradingView Mean Reversion ATR 1h"
+    default_timeframe = "1h"
+    allowed_regimes = (AAPIFRegime.MEAN_REVERSION, AAPIFRegime.TREND_EXHAUSTION, AAPIFRegime.RISK_ON)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ATRC10InstitutionalStrategy(InstitutionalEvolutionMixin, TradingViewMeanReversionAtr10mStrategy):
+    name = "Aegis Tactical Reversion Confirmation Engine (ATRC-10)"
+    description = "AAPIF clone of TradingView Mean Reversion ATR 10m for lower-timeframe tactical confirmation and reversal validation."
+    baseline_strategy_name = "TradingView Mean Reversion ATR 10m"
+    default_timeframe = "10m"
+    allowed_regimes = (AAPIFRegime.MEAN_REVERSION, AAPIFRegime.TREND_EXHAUSTION, AAPIFRegime.FALSE_BREAKOUT)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ADVEInstitutionalStrategy(InstitutionalEvolutionMixin, ATRTrendBurstStrategy):
+    name = "Aegis Directional Volatility Expansion Engine (ADVE)"
+    description = "AAPIF clone of ATR Trend Burst for generalized directional ATR expansion participation."
+    baseline_strategy_name = "ATR Trend Burst"
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.VOLATILITY_BREAKOUT)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ALRCInstitutionalStrategy(InstitutionalEvolutionMixin, VWAPReclaimBacktestStrategy):
+    name = "Aegis Liquidity Reclaim Continuation Engine (ALRC)"
+    description = "AAPIF clone of VWAP Reclaim for institutional liquidity reclaim and continuation shadow validation."
+    baseline_strategy_name = "VWAP Reclaim"
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.RISK_ON)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class AFMAInstitutionalStrategy(InstitutionalEvolutionMixin, ExistingMomentumStrategy):
+    name = "Aegis Flow Momentum Alignment Engine (AFMA)"
+    description = "AAPIF clone of Existing Momentum for baseline flow-aligned directional continuation."
+    baseline_strategy_name = "Existing Momentum"
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.RISK_ON)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class AQMRInstitutionalStrategy(InstitutionalEvolutionMixin, ResearchMomentumVolatilityStrategy):
+    name = "Aegis Quantitative Momentum Regime Engine (AQMR)"
+    description = "AAPIF clone of Research Momentum Volatility for adaptive momentum-volatility regime allocation."
+    baseline_strategy_name = "Research Momentum Volatility"
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.RISK_ON, AAPIFRegime.VOLATILITY_BREAKOUT)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ASTPInstitutionalStrategy(InstitutionalEvolutionMixin, AcademicTimeSeriesMomentumStrategy):
+    name = "Aegis Systematic Trend Persistence Engine (ASTP)"
+    description = "AAPIF clone of Academic Time-Series Momentum for long-horizon systematic momentum persistence."
+    baseline_strategy_name = "Academic Time-Series Momentum"
+    allowed_regimes = (AAPIFRegime.TREND_EXPANSION, AAPIFRegime.RISK_ON)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class ATMRInstitutionalStrategy(InstitutionalEvolutionMixin, AcademicShortTermReversalStrategy):
+    name = "Aegis Tactical Mean Reversion Engine (ATMR)"
+    description = "AAPIF clone of Academic Short-Term Reversal for oversold recovery and tactical reversal shadow validation."
+    baseline_strategy_name = "Academic Short-Term Reversal"
+    allowed_regimes = (AAPIFRegime.MEAN_REVERSION, AAPIFRegime.TREND_EXHAUSTION)
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        signal = super().entry_signal(row, previous)
+        if signal is None:
+            return None
+        allowed, reason = self._institutional_shadow_allows(row, previous)
+        if not allowed:
+            return None
+        return BacktestSignal(signal.entry, signal.stop_price, signal.take_profit_price, f"{reason}; {signal.reason}")
+
+
+class AAPOInstitutionalStrategy(InstitutionalEvolutionMixin, CertifiedRiskManagedCompositeStrategy):
+    name = "Aegis Adaptive Portfolio Orchestration Engine (AAPO)"
+    description = "AAPIF master shadow orchestration engine for regime classification, adaptive allocation, survivability, and portfolio CAGR validation."
+    baseline_strategy_name = "Certified Risk Managed Composite"
+    default_timeframe = "1h"
+    allowed_regimes = tuple(AAPIFRegime)
+    execution_fragility_limit = 0.82
+
+    def __init__(self) -> None:
+        self._orchestrator = AegisAdaptivePortfolioOrchestrator()
+        self._modules: dict[str, tuple[BacktestStrategy, ...]] = {
+            "BTC/USDT": (ADVEInstitutionalStrategy(), AFMAInstitutionalStrategy(), ASTPInstitutionalStrategy()),
+            "ETH/USDT": (AAMX5InstitutionalStrategy(), ADVEInstitutionalStrategy(), AQMRInstitutionalStrategy()),
+            "BNB/USDT": (AFMAInstitutionalStrategy(), AQMRInstitutionalStrategy()),
+            "DOGE/USDT": (AFMAInstitutionalStrategy(), ATMRInstitutionalStrategy()),
+            "ADA/USDT": (AQMRInstitutionalStrategy(), ATMRInstitutionalStrategy()),
+            "TRX/USDT": (ASVR1HInstitutionalStrategy(), ADVEInstitutionalStrategy()),
+            "AVAX/USDT": (ALRCInstitutionalStrategy(), AQMRInstitutionalStrategy()),
+            "SOL/USDT": (ALRCInstitutionalStrategy(), AAMX5InstitutionalStrategy()),
+            "XRP/USDT": (ALRCInstitutionalStrategy(), ATMRInstitutionalStrategy()),
+            "LINK/USDT": (AQMRInstitutionalStrategy(), ALRCInstitutionalStrategy()),
+        }
+
+    def entry_signal(self, row: pd.Series, previous: pd.Series | None) -> BacktestSignal | None:
+        symbol = str(row.get("symbol", ""))
+        regime = self._orchestrator.regime_classifier.classify_row(row, previous)
+        execution = self._orchestrator.execution_model.estimate(row)
+        if regime.regime in {AAPIFRegime.PANIC, AAPIFRegime.LIQUIDITY_CRISIS, AAPIFRegime.LIQUIDATION_CASCADE}:
+            return None
+        if execution.execution_fragility_score > self.execution_fragility_limit:
+            return None
+        candidates: list[tuple[BacktestStrategy, BacktestSignal]] = []
+        for module in self._modules.get(symbol, ()):
+            if not self._orchestrator.strategy_allowed(module.name, regime.regime):
+                continue
+            signal = module.entry_signal(row, previous)
+            if signal is not None:
+                candidates.append((module, signal))
+        if not candidates:
+            return None
+        module, signal = candidates[0]
+        sizing = self._orchestrator.sizer.size(
+            strategy_name=module.name,
+            symbol=symbol,
+            base_weight=0.1,
+            volatility=regime.volatility,
+            regime=regime.regime,
+        )
+        if sizing.final_weight <= 0:
+            return None
+        return BacktestSignal(
+            entry=True,
+            stop_price=signal.stop_price,
+            take_profit_price=signal.take_profit_price,
+            reason=f"AAPO shadow orchestration selected {module.name}; {regime.regime}; weight {sizing.final_weight:.3f}; {signal.reason}",
+        )
+
+
 STRATEGY_REGISTRY: dict[str, BacktestStrategy] = {
     strategy.name: strategy
     for strategy in (
@@ -1202,6 +1438,16 @@ STRATEGY_REGISTRY: dict[str, BacktestStrategy] = {
         TradingViewMeanReversionAtr10mStrategy(),
         TradingViewMeanReversionAtr1hStrategy(),
         CertifiedRiskManagedCompositeStrategy(),
+        AAMX5InstitutionalStrategy(),
+        ASVR1HInstitutionalStrategy(),
+        ATRC10InstitutionalStrategy(),
+        ADVEInstitutionalStrategy(),
+        ALRCInstitutionalStrategy(),
+        AFMAInstitutionalStrategy(),
+        AQMRInstitutionalStrategy(),
+        ASTPInstitutionalStrategy(),
+        ATMRInstitutionalStrategy(),
+        AAPOInstitutionalStrategy(),
     )
 }
 

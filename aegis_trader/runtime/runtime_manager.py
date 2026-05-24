@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import logging
+import threading
 from pathlib import Path
 from typing import Any
 from datetime import UTC, datetime
@@ -18,6 +21,7 @@ RUNTIME_ALERTS_PATH = Path("reports/runtime_alerts.json")
 RUNTIME_ORDER_AUDIT_PATH = Path("reports/runtime_order_audit.json")
 RUNTIME_TRADE_EVENTS_PATH = Path("reports/runtime_trade_events.json")
 RUNTIME_TRADE_PNL_SNAPSHOTS_PATH = Path("reports/runtime_trade_pnl_snapshots.json")
+logger = logging.getLogger(__name__)
 
 
 class RuntimeManager:
@@ -86,10 +90,15 @@ class RuntimeManager:
     def runtime_status(self) -> dict[str, Any]:
         states = self.list_bot_states()
         control = self._read_runtime_control()
+        runtime_state = str(control.get("runtime", "STOPPED"))
+        configured_running_bots = sum(1 for row in states if row.get("status") == "RUNNING")
+        active_running_bots = configured_running_bots if runtime_state == "RUNNING" else 0
         return {
-            "runtime": str(control.get("runtime", "STOPPED")),
+            "runtime": runtime_state,
             "runtime_mode": str(control.get("runtime_mode", "HEADLESS")),
-            "running_bots": sum(1 for row in states if row.get("status") == "RUNNING"),
+            "running_bots": active_running_bots,
+            "configured_running_bots": configured_running_bots,
+            "runtime_state_consistency": "OK" if runtime_state == "RUNNING" or configured_running_bots == 0 else "STOPPED_WITH_RUNNING_BOT_DEFINITIONS",
             "failed_bots": sum(1 for row in states if row.get("status") == "ERROR"),
             "alerts": sum(1 for row in states if str(row.get("alert_level", "INFO")) in {"WARNING", "CRITICAL"}),
             "critical_alerts": sum(1 for row in states if str(row.get("alert_level", "INFO")) == "CRITICAL"),
@@ -175,6 +184,7 @@ class RuntimeManager:
             }
         )
         if new_status == "RUNNING":
+            current["cumulative_started_at"] = current.get("cumulative_started_at") or current.get("started_at") or now
             current["started_at"] = now
             current["pnl_started_at"] = now
             current["pnl_since_start"] = 0.0
@@ -189,6 +199,24 @@ class RuntimeManager:
                 quantity=0.0,
                 price=float(current.get("runtime_entry_price", 0.0) or 0.0),
                 reason=f"{action} via {source}",
+            )
+        else:
+            self.record_trade_event(
+                bot_id=str(current["bot_id"]),
+                trade_id=f"{current['bot_id']}:runtime:{now}",
+                event_type=f"BOT_{new_status}",
+                symbol=str(current.get("symbol", "")),
+                order_state=new_status,
+                position_state="FLAT",
+                lifecycle_state=self._trade_lifecycle_state(new_status),
+                price=float(current.get("runtime_entry_price", 0.0) or 0.0),
+                quantity=0.0,
+                reason=f"{action} via {source}",
+                metrics={
+                    "strategy": str(current.get("strategy", "")),
+                    "timeframe": str(current.get("timeframe", "")),
+                    "capital": float(current.get("capital", 0.0) or 0.0),
+                },
             )
         self._upsert_state(current)
         bot_state = "RUNNING" if new_status == "RUNNING" else "PAUSED" if new_status == "PAUSED" else "STOPPED"
@@ -304,7 +332,9 @@ class RuntimeManager:
             "source_order_id": source_order_id,
             "metrics": metrics or {},
         }
+        self._patch_runtime_trade_position(event)
         self._append_json_row(RUNTIME_TRADE_EVENTS_PATH, event, limit=10_000)
+        self._persist_runtime_event_db(event)
         return event
 
     def record_trade_pnl_snapshot(
@@ -336,7 +366,76 @@ class RuntimeManager:
             "lifecycle_state": lifecycle_state,
         }
         self._append_json_row(RUNTIME_TRADE_PNL_SNAPSHOTS_PATH, snapshot, limit=10_000)
+        self._persist_runtime_event_db(
+            {
+                **snapshot,
+                "event_id": snapshot["snapshot_id"],
+                "event_time": snapshot["snapshot_time"],
+                "event_type": "PNL_SNAPSHOT",
+                "price": snapshot["current_price"],
+                "position_state": "OPEN" if lifecycle_state not in {"Closed", "Cancelled", "Failed"} else "FLAT",
+                "order_state": "SNAPSHOT",
+            }
+        )
         return snapshot
+
+    def _persist_runtime_event_db(self, event: dict[str, Any]) -> None:
+        if not bool(getattr(settings, "database_enabled", False)):
+            return
+
+        def worker() -> None:
+            try:
+                from aegis_trader.storage.bot_repository import append_runtime_event
+                from aegis_trader.storage.db import build_engine, build_session_factory
+
+                async def write() -> None:
+                    engine = build_engine()
+                    factory = build_session_factory(engine)
+                    async with factory() as session:
+                        await append_runtime_event(session, event)
+                    await engine.dispose()
+
+                asyncio.run(write())
+            except Exception:
+                logger.exception("runtime_event_database_persist_failed fallback=json bot_id=%s event_type=%s", event.get("bot_id"), event.get("event_type"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _patch_runtime_trade_position(self, event: dict[str, Any]) -> None:
+        event_type = str(event.get("event_type", ""))
+        lifecycle_state = str(event.get("lifecycle_state", ""))
+        position_state = str(event.get("position_state", ""))
+        if event_type == "PNL_SNAPSHOT":
+            return
+        if event_type == "TradeEntered" and position_state == "OPEN":
+            patch = {
+                "runtime_position_state": "IN_TRADE",
+                "last_entry_at": str(event.get("event_time", "")),
+                "last_trade_event_type": event_type,
+                "last_trade_event_at": str(event.get("event_time", "")),
+                "last_trade_event_reason": str(event.get("reason", "")),
+            }
+        elif event_type in {"TradeExited", "StopTriggered", "RiskTriggered"} or lifecycle_state in {"Closed", "Cancelled", "Failed"}:
+            patch = {
+                "runtime_position_state": "OUT_OF_TRADE",
+                "last_exit_at": str(event.get("event_time", "")),
+                "last_trade_event_type": event_type,
+                "last_trade_event_at": str(event.get("event_time", "")),
+                "last_trade_event_reason": str(event.get("reason", "")),
+            }
+        else:
+            return
+
+        rows = self._read_state()
+        changed = False
+        for row in rows:
+            if str(row.get("bot_id", row.get("name", ""))) != str(event.get("bot_id", "")):
+                continue
+            row.update(patch)
+            changed = True
+        if changed:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
 
     def _read_state(self) -> list[dict[str, Any]]:
         if not self.state_path.exists():

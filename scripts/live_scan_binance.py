@@ -5,6 +5,8 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
+import json
+
 from aegis_trader.analytics.replay_metrics import TOP_TRADING_SYMBOLS, load_feature_file, run_symbol_replay, write_reports
 from aegis_trader.core.config import settings
 from aegis_trader.market_data.binance_history import BinanceHistoricalClient, calculate_features, default_history_window, write_csv, write_parquet_if_available
@@ -20,7 +22,10 @@ async def scan_once(args: argparse.Namespace) -> None:
     metrics = []
     trades = []
     errors: dict[str, str] = {}
-    for symbol in TOP_TRADING_SYMBOLS:
+    symbols = [item.strip() for item in (args.symbols or "").split(",") if item.strip()] or list(TOP_TRADING_SYMBOLS)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for symbol in symbols:
         try:
             klines = await client.fetch_klines(symbol=symbol, interval=args.interval, start=start, end=end)
             raw_rows = [kline.as_dict(symbol, args.interval) for kline in klines]
@@ -34,15 +39,20 @@ async def scan_once(args: argparse.Namespace) -> None:
             feature_rows[-1]["depth_imbalance"] = snapshot.depth_imbalance
             feature_rows[-1]["taker_buy_ratio"] = snapshot.taker_buy_ratio
             safe = symbol.replace("/", "")
-            path = data_dir / f"{safe}_{args.interval}_live_features.parquet"
-            write_csv(data_dir / f"{safe}_{args.interval}_live_features.csv", feature_rows)
+            path = data_dir / f"{safe}_{args.interval}_{args.lookback_days}d_features.parquet"
+            write_csv(data_dir / f"{safe}_{args.interval}_{args.lookback_days}d_features.csv", feature_rows)
             write_parquet_if_available(path, feature_rows)
+            write_csv(data_dir / f"{safe}_{args.interval}_live_features.csv", feature_rows)
+            write_parquet_if_available(data_dir / f"{safe}_{args.interval}_live_features.parquet", feature_rows)
             symbol_metrics, symbol_trades = run_symbol_replay(load_feature_file(path))
             metrics.append(symbol_metrics)
             trades.extend(symbol_trades)
         except Exception as exc:
             errors[symbol] = str(exc)
-    write_reports(metrics, trades, Path(args.out))
+            log_line = {"generated_at": datetime.now(UTC).isoformat(), "symbol": symbol, "error": str(exc)}
+            with (out_dir / "scanner_errors.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(log_line) + "\n")
+    write_reports(metrics, trades, out_dir)
     heartbeat = {
         "generated_at": datetime.now(UTC).isoformat(),
         "source": "binance_spot_testnet" if args.testnet else "binance_public_market_data",
@@ -52,7 +62,9 @@ async def scan_once(args: argparse.Namespace) -> None:
         "errors": errors,
         "refresh_seconds": args.sleep,
     }
-    (Path(args.out) / "live_scan_heartbeat.json").write_text(__import__("json").dumps(heartbeat, indent=2), encoding="utf-8")
+    (out_dir / "live_scan_heartbeat.json").write_text(json.dumps(heartbeat, indent=2), encoding="utf-8")
+    status = "OK" if metrics else "DEGRADED"
+    (out_dir / "scanner_status.json").write_text(json.dumps({"status": status, **heartbeat}, indent=2), encoding="utf-8")
     buy_symbols = [item.symbol for item in metrics if item.scan_bucket == "BUY"]
     in_trade_symbols = [item.symbol for item in metrics if item.scan_bucket == "IN TRADE"]
     if args.database:
@@ -60,7 +72,8 @@ async def scan_once(args: argparse.Namespace) -> None:
         engine = build_engine(args.database_url)
         factory = build_session_factory(engine)
         async with factory() as session:
-            await write_scan_state(session, metrics, trades, heartbeat, run_id=f"live-{args.interval}-{args.lookback_days}d")
+            if metrics:
+                await write_scan_state(session, metrics, trades, heartbeat, run_id=f"live-{args.interval}-{args.lookback_days}d")
         await engine.dispose()
     print({**heartbeat, "buy": buy_symbols, "in_trade": in_trade_symbols})
 
@@ -68,6 +81,7 @@ async def scan_once(args: argparse.Namespace) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh Binance top-10 live-scan buckets from recent public candles.")
     parser.add_argument("--interval", default="1h")
+    parser.add_argument("--symbols", default=",".join(settings.symbols))
     parser.add_argument("--lookback-days", type=int, default=45)
     parser.add_argument("--data-dir", default="data/binance_live")
     parser.add_argument("--out", default="reports")

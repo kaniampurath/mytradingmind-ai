@@ -33,5 +33,5 @@ async def run_runtime(mode: str, heartbeat_seconds: float, once: bool = False) -
         except TimeoutError:
             continue
 
-    if stop_event.is_set():
+    if stop_event.is_set() or once:
         manager.stop_runtime()

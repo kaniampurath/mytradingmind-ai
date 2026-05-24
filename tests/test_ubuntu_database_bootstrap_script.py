@@ -20,7 +20,7 @@ def test_init_db_prints_all_application_tables_from_models() -> None:
 
     assert "--print-tables" in text
     assert "Base.metadata.tables" in text
-    assert expected_tables == [
+    for table_name in [
         "myts_bot_table_bot_instances",
         "myts_bot_table_journal_events",
         "myts_bot_table_live_scan",
@@ -29,4 +29,14 @@ def test_init_db_prints_all_application_tables_from_models() -> None:
         "myts_bot_table_risk_settings",
         "myts_bot_table_scanner_heartbeat",
         "myts_bot_table_validation_runs",
-    ]
+        "users",
+        "roles",
+        "permissions",
+        "screens",
+        "actions",
+        "sessions",
+        "audit_trail",
+        "admin_bootstrap_credentials",
+    ]:
+        assert table_name in expected_tables
+    assert "security bootstrap ready" in text

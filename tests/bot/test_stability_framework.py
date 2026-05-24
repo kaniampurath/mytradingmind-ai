@@ -131,7 +131,8 @@ def test_framework_records_order_lifecycle_and_alert_payloads() -> None:
     assert [payload["channel"] for payload in payloads] == ["webhook", "telegram"]
 
 
-def test_runtime_manager_attaches_framework_state_to_each_running_bot() -> None:
+def test_runtime_manager_attaches_framework_state_to_each_running_bot(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_manager_module.settings, "database_enabled", False)
     tmp_path = workspace_tmp()
     registry = BotRegistry(tmp_path / "bots.json")
     registry.save(pd.DataFrame([{"name": "Stable Runtime Bot", "strategy": "Certified Risk Managed Composite", "symbol": "BTC/USDT", "state": "BACKTESTED"}]))
@@ -152,6 +153,7 @@ def test_runtime_manager_attaches_framework_state_to_each_running_bot() -> None:
 
 
 def test_runtime_manager_persists_trade_events_and_pnl_snapshots(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_manager_module.settings, "database_enabled", False)
     tmp_path = workspace_tmp()
     monkeypatch.setattr(runtime_manager_module, "RUNTIME_ORDER_AUDIT_PATH", tmp_path / "runtime_order_audit.json")
     monkeypatch.setattr(runtime_manager_module, "RUNTIME_TRADE_EVENTS_PATH", tmp_path / "runtime_trade_events.json")
@@ -188,6 +190,67 @@ def test_runtime_manager_persists_trade_events_and_pnl_snapshots(monkeypatch) ->
     assert events[-1]["order_state"] == "SUBMITTED"
     assert snapshots[-1]["unrealized_pnl"] == 1.0
     assert snapshots[-1]["lifecycle_state"] == "Active"
+
+
+def test_runtime_manager_preserves_cumulative_start_across_restart(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_manager_module.settings, "database_enabled", False)
+    tmp_path = workspace_tmp()
+    registry = BotRegistry(tmp_path / "bots.json")
+    registry.save(pd.DataFrame([{"name": "CAGR Bot", "strategy": "ATR Trend Burst", "symbol": "BTC/USDT", "state": "BACKTESTED"}]))
+    manager = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json")
+
+    first = manager.start_bot("CAGR_Bot", source="TEST")
+    manager.stop_bot("CAGR_Bot", source="TEST")
+    second = manager.start_bot("CAGR_Bot", source="TEST")
+
+    assert first["cumulative_started_at"]
+    assert second["cumulative_started_at"] == first["cumulative_started_at"]
+    assert second["pnl_started_at"] == second["started_at"]
+    assert second["pnl_since_start"] == 0.0
+
+
+def test_runtime_manager_toggles_in_trade_and_out_of_trade(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_manager_module.settings, "database_enabled", False)
+    tmp_path = workspace_tmp()
+    monkeypatch.setattr(runtime_manager_module, "RUNTIME_ORDER_AUDIT_PATH", tmp_path / "runtime_order_audit.json")
+    monkeypatch.setattr(runtime_manager_module, "RUNTIME_TRADE_EVENTS_PATH", tmp_path / "runtime_trade_events.json")
+    registry = BotRegistry(tmp_path / "bots.json")
+    registry.save(pd.DataFrame([{"name": "Toggle Bot", "strategy": "ATR Trend Burst", "symbol": "BTC/USDT", "state": "BACKTESTED"}]))
+    manager = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json")
+
+    manager.start_bot("Toggle_Bot", source="TEST")
+    manager.record_order_lifecycle(
+        bot_id="Toggle_Bot",
+        client_order_id="entry-1",
+        symbol="BTC/USDT",
+        side="BUY",
+        status="SUBMITTED",
+        quantity=0.1,
+        price=100.0,
+        reason="entry filled",
+    )
+    in_trade = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json").list_bot_states()[0]
+
+    manager.record_order_lifecycle(
+        bot_id="Toggle_Bot",
+        client_order_id="exit-1",
+        symbol="BTC/USDT",
+        side="SELL",
+        status="CLOSED",
+        quantity=0.0,
+        price=102.0,
+        reason="exit signal",
+    )
+    out_of_trade = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json").list_bot_states()[0]
+    recovered_after_ui_restart = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json").list_bot_states()[0]
+
+    assert in_trade["runtime_position_state"] == "IN_TRADE"
+    assert in_trade["last_entry_at"]
+    assert out_of_trade["runtime_position_state"] == "OUT_OF_TRADE"
+    assert out_of_trade["last_exit_at"]
+    assert out_of_trade["last_trade_event_type"] == "TradeExited"
+    assert recovered_after_ui_restart["runtime_position_state"] == "OUT_OF_TRADE"
+    assert recovered_after_ui_restart["last_exit_at"] == out_of_trade["last_exit_at"]
 
 
 def test_runtime_manager_reconciliation_surfaces_recovery_plan() -> None:

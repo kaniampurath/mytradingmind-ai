@@ -7,7 +7,7 @@ mytradingmind.ai is an educational, testnet-first crypto trading operations plat
 ## Releases
 
 - `v1.0`: baseline app release preserved from the original `main` branch before the Bot Operations Platform upgrade.
-- `v1.2`: current main release with Bot Management, runtime cockpit, Trade Management, journal analysis, headless runtime scripts, and Ubuntu database bootstrap.
+- `v1.2.1`: current main release with Bot Management, runtime cockpit, Trade Management, journal analysis, headless runtime scripts, Ubuntu installation hardening, security/RBAC foundations, AAPIF strategy evolution, and persisted bot trade-state recovery.
 
 Use either release independently:
 
@@ -15,7 +15,7 @@ Use either release independently:
 git clone https://github.com/kaniampurath/mytradingmind-ai.git
 cd mytradingmind-ai
 git checkout v1.0   # baseline
-git checkout v1.2   # current main release
+git checkout v1.2.1 # current main release
 ```
 
 ## What It Does
@@ -94,6 +94,7 @@ pip install -e ".[dev]"
 
 copy .env.example .env
 python scripts\init_db.py
+python scripts\enterprise_security_test.py --concurrent-users 10
 pytest
 ```
 
@@ -126,13 +127,16 @@ cd mytradingmind-ai
 chmod +x setup.sh
 ./setup.sh
 
-cp deploy/ubuntu.env.example .env
 nano .env
 
 mkdir -p data reports logs backups
+python3 scripts/validate_env.py --env-file .env
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mariadb redis
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/init_db.py --print-tables
+docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/enterprise_security_test.py --concurrent-users 10
+docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/binance_backfill.py --transport python
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mytradingmind_runtime mytradingmind_dashboard scanner
+scripts/install_sanity_ubuntu.sh
 ```
 
 Open the dashboard:
@@ -143,7 +147,20 @@ http://YOUR_DROPLET_IP:8501
 
 Full guide: [Ubuntu Droplet Deployment](docs/UBUNTU_DROPLET_DEPLOYMENT.md)
 
+Operational diagnostics:
+
+```bash
+python3 scripts/runtime_diagnostics.py --dashboard-url http://127.0.0.1:8501/_stcore/health
+scripts/reboot_verify_ubuntu.sh
+```
+
 Release notes and rollback guidance: [Releases](docs/RELEASES.md)
+
+## Security And User Management
+
+Database initialization automatically creates the identity, RBAC, subscription, session, audit, and admin-bootstrap tables. Default roles are `BASIC_USER`, `POWER_USER`, and `ADMIN`; default permissions and screen grants are seeded idempotently.
+
+Passwords and bootstrap credentials are stored only as salted PBKDF2 hashes. To enable first-admin bootstrap, set both `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and `AEGIS_BOOTSTRAP_ADMIN_TEMP_PASSWORD` before running `scripts/init_db.py`. The bootstrap credential is single-use, expiry-bound, and locked after three failed attempts.
 
 ## Runtime Commands
 

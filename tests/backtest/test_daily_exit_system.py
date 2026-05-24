@@ -46,7 +46,7 @@ def test_every_registered_strategy_has_timeframe_appropriate_exit_rules() -> Non
         if strategy.default_timeframe == "1d":
             assert strategy._uses_daily_exit_stack()
             assert strategy.daily_exit_config.time_stop_bars == 25
-        elif strategy.name.startswith("TradingView Mean Reversion ATR"):
+        elif strategy.name.startswith("TradingView Mean Reversion ATR") or str(getattr(strategy, "baseline_strategy_name", "")).startswith("TradingView Mean Reversion ATR"):
             assert not strategy.use_lower_timeframe_sell_stack
             assert strategy.exit_reason(pd.Series({"low": 94.0, "close": 95.0}), {"stop": 96.0, "bars": 1}) == "ATR_TRAILING_STOP"
         else:

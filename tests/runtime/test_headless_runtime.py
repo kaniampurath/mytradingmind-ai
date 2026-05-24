@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pandas as pd
 from pathlib import Path
 from uuid import uuid4
@@ -65,5 +68,48 @@ def test_headless_runtime_single_cycle_starts_independently() -> None:
 
     asyncio.run(run_runtime("HEADLESS", 0.01, once=True))
     status = RuntimeManager().runtime_status()
-    assert status["runtime"] == "RUNNING"
-    RuntimeManager().stop_runtime()
+    assert status["runtime"] == "STOPPED"
+    assert status["runtime_mode"] == "HEADLESS"
+
+
+def test_headless_runtime_imports_without_dashboard_or_streamlit() -> None:
+    code = (
+        "import sys;"
+        "import aegis_trader.runtime.headless_service;"
+        "blocked=[name for name in sys.modules if name == 'streamlit' or name.startswith('aegis_trader.dashboards')];"
+        "assert not blocked, blocked;"
+        "print('headless_import_clean')"
+    )
+
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "headless_import_clean" in result.stdout
+
+
+def test_mytradingmind_runtime_cli_alias_is_headless_safe() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "mytradingmind.runtime", "status"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert '"action": "STATUS"' in result.stdout
+    assert '"runtime_mode": "HEADLESS"' in result.stdout
+
+
+def test_stopped_runtime_does_not_report_active_running_bots() -> None:
+    tmp_path = workspace_tmp()
+    registry = BotRegistry(tmp_path / "bots.json")
+    registry.save(pd.DataFrame([{"name": "Stopped Runtime Bot", "strategy": "ATR Trend Burst", "symbol": "BTC/USDT", "state": "RUNNING"}]))
+    manager = RuntimeManager(registry=registry, state_path=tmp_path / "runtime_state.json")
+
+    manager.stop_runtime()
+    status = manager.runtime_status()
+
+    assert status["runtime"] == "STOPPED"
+    assert status["running_bots"] == 0
+    assert status["configured_running_bots"] == 1
+    assert status["runtime_state_consistency"] == "STOPPED_WITH_RUNNING_BOT_DEFINITIONS"

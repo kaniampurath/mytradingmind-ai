@@ -5,7 +5,7 @@ services:
       dockerfile: deploy/Dockerfile
     command: ["python", "scripts/start_dashboard.py", "--foreground", "--address", "0.0.0.0", "--port", "8501"]
     ports:
-      - "8501:8501"
+      - "${DASHBOARD_PORT:-8501}:8501"
     env_file:
       - ../.env
     volumes:
@@ -16,7 +16,13 @@ services:
       mariadb:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   mytradingmind_runtime:
     build:
@@ -33,7 +39,8 @@ services:
       mariadb:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    restart: unless-stopped
 
   scanner:
     build:
@@ -49,6 +56,12 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import json, pathlib, datetime; p=pathlib.Path('/app/reports/live_scan_heartbeat.json'); data=json.loads(p.read_text()); ts=datetime.datetime.fromisoformat(data['generated_at'].replace('Z','+00:00')); age=(datetime.datetime.now(datetime.timezone.utc)-ts).total_seconds(); raise SystemExit(0 if age < 900 else 1)\""]
+      interval: 60s
+      timeout: 5s
+      retries: 5
 
   mariadb:
     image: mariadb:10.11
@@ -58,7 +71,7 @@ services:
       MARIADB_PASSWORD: ${MARIADB_PASSWORD:-change_me}
       MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-change_root_me}
     ports:
-      - "3306:3306"
+      - "${MARIADB_HOST_PORT:-3307}:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
     healthcheck:
@@ -66,11 +79,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
 volumes:
   mariadb_data:

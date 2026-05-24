@@ -1,6 +1,6 @@
 # Ubuntu / DigitalOcean Deployment Guide
 
-This guide installs mytradingmind.ai v1.2 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
+This guide installs mytradingmind.ai v1.2.1 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
 
 ## 1. Create The Droplet
 
@@ -25,20 +25,21 @@ Keep MariaDB private. Do not expose port `3306` publicly unless you explicitly n
 
 ```bash
 sudo apt update
-sudo apt install -y git docker.io docker-compose-plugin
+sudo apt install -y git docker.io python3
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
-newgrp docker
 ```
+
+Log out and back in, or reboot, after adding the user to the `docker` group. On Ubuntu variants where `docker-compose-plugin` is unavailable, install Docker from the official Docker apt repository, then verify with `docker compose version`.
 
 ## 3. Clone From GitHub
 
-Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2` is the current main release.
+Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2.1` is the current main release.
 
 ```bash
 git clone https://github.com/kaniampurath/mytradingmind-ai.git
 cd mytradingmind-ai
-git checkout v1.2
+git checkout v1.2.1
 ```
 
 ## 4. Create Environment File
@@ -54,6 +55,8 @@ Change at minimum:
 AEGIS_DATABASE_URL=mysql+pymysql://tradeuser:<strong_password>@mariadb:3306/bots
 MARIADB_PASSWORD=<strong_password>
 MARIADB_ROOT_PASSWORD=<strong_root_password>
+MARIADB_HOST_PORT=3307
+DASHBOARD_PORT=8501
 ```
 
 Keep:
@@ -63,6 +66,22 @@ AEGIS_MODE=PAPER_MODE
 AEGIS_BINANCE_TESTNET=true
 AEGIS_DATABASE_SCHEMA=bots
 AEGIS_DATABASE_ENABLED=true
+AEGIS_SYMBOLS=["BTC/USDT","ETH/USDT","BNB/USDT","XRP/USDT","SOL/USDT","DOGE/USDT","ADA/USDT","TRX/USDT","LINK/USDT","AVAX/USDT"]
+AEGIS_BOOTSTRAP_ADMIN_EMAIL=
+AEGIS_BOOTSTRAP_ADMIN_TEMP_PASSWORD=
+```
+
+Validate before starting containers:
+
+```bash
+scripts/preinstall_check_ubuntu.sh
+python3 scripts/validate_env.py --env-file .env
+```
+
+If validation reports a DB password mismatch after MariaDB already initialized, fix `.env` first, then run:
+
+```bash
+scripts/reset_docker_db.sh
 ```
 
 ## 5. Start Core Services
@@ -72,6 +91,8 @@ mkdir -p data reports logs
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mariadb redis
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
   python scripts/init_db.py --print-tables
+docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
+  python scripts/enterprise_security_test.py --concurrent-users 10
 ```
 
 For a non-Docker Python install on Ubuntu, initialize the same schema with:
@@ -91,6 +112,13 @@ The database bootstrap creates/verifies:
 - `myts_bot_table_risk_settings`
 - `myts_bot_table_scanner_heartbeat`
 - `myts_bot_table_validation_runs`
+- `users`, `roles`, `permissions`, `screens`, `actions`
+- `user_roles`, `role_permissions`, `role_screens`
+- `subscriptions`, `user_bot_subscriptions`, `billing_history`
+- `sessions`, `audit_trail`, `activation_tokens`
+- `admin_bootstrap_credentials`
+
+Security bootstrap is idempotent. Default roles are `BASIC_USER`, `POWER_USER`, and `ADMIN`. Passwords, activation tokens, reset tokens, and bootstrap credentials are stored only as hashes. To create a first-use admin bootstrap credential, set both `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and `AEGIS_BOOTSTRAP_ADMIN_TEMP_PASSWORD` before DB initialization.
 
 ## 6. Load Market Data
 
@@ -98,8 +126,10 @@ Backfill one year of Binance public candle features:
 
 ```bash
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
-  python scripts/binance_backfill.py --symbols ETH/USDT,SOL/USDT,BNB/USDT,XRP/USDT,ADA/USDT,DOGE/USDT,LINK/USDT,AVAX/USDT,TRX/USDT --transport python
+  python scripts/binance_backfill.py --transport python
 ```
+
+The backfill writes dashboard-compatible files such as `data/binance/BTCUSDT_1h_365d_features.parquet` and matching CSV files.
 
 Generate strategy metrics into MariaDB:
 
@@ -124,11 +154,13 @@ http://<droplet-ip>:8501
 ## 8. Verify
 
 ```bash
+scripts/install_sanity_ubuntu.sh
 docker compose -f deploy/docker-compose.yml --env-file .env ps
 docker compose -f deploy/docker-compose.yml --env-file .env logs --tail=80 mytradingmind_dashboard
 docker compose -f deploy/docker-compose.yml --env-file .env logs --tail=80 mytradingmind_runtime
 docker compose -f deploy/docker-compose.yml --env-file .env exec mytradingmind_runtime \
   python -m mytradingmind.runtime status
+python3 scripts/runtime_diagnostics.py --dashboard-url http://127.0.0.1:8501/_stcore/health
 tail -n 80 logs/mytradingmind.log
 ```
 
@@ -138,6 +170,23 @@ Expected:
 - headless runtime service is running or reports controlled `HEADLESS` state
 - scanner service is running
 - MariaDB service is healthy
+- dashboard health endpoint returns HTTP 200
+- scanner heartbeat and replay report files are present
+
+## 9. Reboot Verification
+
+Services use `restart: unless-stopped`. After reboot:
+
+```bash
+scripts/reboot_verify_ubuntu.sh
+```
+
+Expected:
+
+- Docker is enabled and active
+- containers restart automatically
+- dashboard is reachable
+- diagnostics show fresh scanner/report state
 - `logs/mytradingmind.log` has `logging_configured` and database diagnostic entries
 - dashboard System Health shows database enabled
 
@@ -162,7 +211,7 @@ Runtime helper defaults:
 
 ```bash
 git pull
-git checkout v1.2
+git checkout v1.2.1
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
   python scripts/init_db.py --print-tables
@@ -190,7 +239,7 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 Return to the current release:
 
 ```bash
-git checkout v1.2
+git checkout v1.2.1
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 ```
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field
+import json
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from aegis_trader.core.enums import TradingMode
@@ -26,6 +28,12 @@ class Settings(BaseSettings):
     database_schema: str = "bots"
     database_enabled: bool = True
     redis_url: str = "redis://localhost:6379/0"
+    auth_session_idle_minutes: int = 30
+    auth_session_absolute_hours: int = 12
+    bootstrap_admin_email: str = ""
+    bootstrap_admin_temp_password: str = ""
+    captcha_required: bool = False
+    captcha_shared_secret: str = ""
     log_dir: str = "logs"
     log_level: str = "INFO"
     log_max_bytes: int = 5_000_000
@@ -46,6 +54,26 @@ class Settings(BaseSettings):
     slippage_threshold_bps: float = 15.0
     stale_feed_seconds: float = 5.0
     event_queue_maxsize: int = 10_000
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def parse_symbols(cls, value: object) -> list[str]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                return [item.strip() for item in text.split(",") if item.strip()]
+            if isinstance(decoded, list):
+                return [str(item).strip() for item in decoded if str(item).strip()]
+            raise ValueError("AEGIS_SYMBOLS must be a JSON list or comma-separated symbols")
+        raise ValueError("AEGIS_SYMBOLS must be a JSON list or comma-separated symbols")
 
 
 settings = Settings()

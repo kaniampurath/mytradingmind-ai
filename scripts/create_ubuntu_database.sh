@@ -15,7 +15,7 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-DATABASE_URL="${DATABASE_URL:-${MYSQL_DATABASE_URL:-}}"
+DATABASE_URL="${AEGIS_DATABASE_URL:-${DATABASE_URL:-${MYSQL_DATABASE_URL:-}}}"
 
 if [ -z "$DATABASE_URL" ]; then
   echo "DATABASE_URL is required. Example:"

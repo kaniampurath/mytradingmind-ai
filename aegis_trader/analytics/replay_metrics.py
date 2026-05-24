@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -204,8 +204,10 @@ def classify_latest(rows: pd.DataFrame, active_trade: dict[str, Any] | None, not
 
 def write_reports(metrics: list[SymbolMetrics], trades: list[Trade], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    metrics_df = pd.DataFrame([asdict(item) for item in metrics])
-    trades_df = pd.DataFrame([asdict(item) for item in trades])
+    metrics_columns = [field.name for field in fields(SymbolMetrics)]
+    trade_columns = [field.name for field in fields(Trade)]
+    metrics_df = pd.DataFrame([asdict(item) for item in metrics], columns=metrics_columns)
+    trades_df = pd.DataFrame([asdict(item) for item in trades], columns=trade_columns)
     metrics_df.to_csv(out_dir / "top10_replay_metrics.csv", index=False)
     metrics_df.to_json(out_dir / "top10_replay_metrics.json", orient="records", indent=2)
     trades_df.to_csv(out_dir / "top10_replay_trades.csv", index=False)
@@ -232,7 +234,14 @@ def write_reports(metrics: list[SymbolMetrics], trades: list[Trade], out_dir: Pa
         "total_pnl",
         "profit_factor",
     ]
-    metrics_df[scan_columns].to_json(out_dir / "live_scan.json", orient="records", indent=2)
+    for column in scan_columns:
+        if column not in metrics_df:
+            metrics_df[column] = pd.Series(dtype="object")
+    live_scan_path = out_dir / "live_scan.json"
+    if metrics_df.empty:
+        live_scan_path.write_text("[]", encoding="utf-8")
+    else:
+        metrics_df[scan_columns].to_json(live_scan_path, orient="records", indent=2)
 
 
 def signal_proximity(row: pd.Series, active_trade: dict[str, Any] | None = None) -> dict[str, float | str]:

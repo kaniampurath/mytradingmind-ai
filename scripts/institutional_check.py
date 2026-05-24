@@ -23,8 +23,36 @@ REQUIRED_FILES = [
     "docs/INSTITUTIONAL_READINESS.md",
     "scripts/start_dashboard.py",
     "scripts/init_db.py",
+    "scripts/preinstall_check_ubuntu.py",
+    "scripts/preinstall_check_ubuntu.sh",
+    "scripts/validate_env.py",
+    "scripts/reset_docker_db.sh",
+    "scripts/install_sanity_ubuntu.sh",
+    "scripts/reboot_verify_ubuntu.sh",
+    "scripts/runtime_diagnostics.py",
+    "scripts/binance_backfill.py",
+    "scripts/enterprise_security_test.py",
+    "aegis_trader/security/auth.py",
     "scripts/production_readiness_stress.py",
 ]
+
+SECURITY_TABLES = {
+    "users",
+    "roles",
+    "permissions",
+    "screens",
+    "actions",
+    "user_roles",
+    "role_permissions",
+    "role_screens",
+    "subscriptions",
+    "user_bot_subscriptions",
+    "billing_history",
+    "sessions",
+    "audit_trail",
+    "activation_tokens",
+    "admin_bootstrap_credentials",
+}
 
 
 def main() -> None:
@@ -70,8 +98,12 @@ def _schema_checks() -> list[dict[str, object]]:
             "detail": normalize_async_database_url(settings.database_url).split("@")[-1],
         },
         {
-            "name": "table_prefix",
-            "status": "PASS" if table_names and all(name.startswith("myts_bot_table_") for name in table_names) else "FAIL",
+            "name": "operational_and_security_tables",
+            "status": "PASS"
+            if table_names
+            and all(name.startswith("myts_bot_table_") or name in SECURITY_TABLES for name in table_names)
+            and SECURITY_TABLES.issubset(table_names)
+            else "FAIL",
             "detail": sorted(table_names),
         },
     ]

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="520" viewBox="0 0 1320 520" role="img" aria-labelledby="title desc">
+  <title id="title">MyTradingMind.ai high-level trading bot flow</title>
+  <desc id="desc">A simple flow showing market data entering an AI signal brain, passing through risk gates, reaching bot execution, and feeding a learning journal.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111b22"/>
+      <stop offset="1" stop-color="#0b1116"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2932"/>
+      <stop offset="1" stop-color="#121d24"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="10" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 12 7 L 0 14 z" fill="#79a7ff"/>
+    </marker>
+  </defs>
+
+  <rect width="1320" height="520" rx="28" fill="url(#bg)"/>
+  <rect x="28" y="28" width="1264" height="464" rx="22" fill="none" stroke="#263744" stroke-width="2"/>
+
+  <text x="64" y="78" fill="#e8edf2" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="800">How the trading OS works</text>
+  <text x="64" y="112" fill="#9fb1bd" font-family="Inter, Arial, sans-serif" font-size="18">A clear path from market movement to controlled bot action, with risk and learning built in.</text>
+
+  <g transform="translate(64 165)" filter="url(#softShadow)">
+    <rect width="210" height="170" rx="18" fill="url(#card)" stroke="#345061" stroke-width="2"/>
+    <circle cx="48" cy="50" r="24" fill="#79a7ff" opacity="0.18"/>
+    <path d="M34 58 L44 46 L56 54 L72 34" fill="none" stroke="#79a7ff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="28" y="96" fill="#e8edf2" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">Market Data</text>
+    <text x="28" y="124" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">Prices, volume,</text>
+    <text x="28" y="146" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">volatility and trends</text>
+  </g>
+
+  <line x1="294" y1="250" x2="382" y2="250" stroke="#79a7ff" stroke-width="5" marker-end="url(#arrow)" opacity="0.9"/>
+
+  <g transform="translate(404 165)" filter="url(#softShadow)">
+    <rect width="230" height="170" rx="18" fill="url(#card)" stroke="#345061" stroke-width="2"/>
+    <circle cx="52" cy="50" r="25" fill="#55d49a" opacity="0.18"/>
+    <path d="M37 50 C43 34 61 34 67 50 C61 66 43 66 37 50 Z" fill="none" stroke="#55d49a" stroke-width="4"/>
+    <circle cx="52" cy="50" r="6" fill="#55d49a"/>
+    <text x="28" y="96" fill="#e8edf2" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">Signal Brain</text>
+    <text x="28" y="124" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">Strategies rank</text>
+    <text x="28" y="146" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">trade opportunities</text>
+  </g>
+
+  <line x1="654" y1="250" x2="742" y2="250" stroke="#79a7ff" stroke-width="5" marker-end="url(#arrow)" opacity="0.9"/>
+
+  <g transform="translate(764 165)" filter="url(#softShadow)">
+    <rect width="230" height="170" rx="18" fill="url(#card)" stroke="#526136" stroke-width="2"/>
+    <circle cx="52" cy="50" r="25" fill="#f0c86a" opacity="0.18"/>
+    <path d="M52 28 L73 40 L69 64 L52 76 L35 64 L31 40 Z" fill="none" stroke="#f0c86a" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M42 52 L50 60 L65 43" fill="none" stroke="#f0c86a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="28" y="96" fill="#e8edf2" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">Risk Gates</text>
+    <text x="28" y="124" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">Capital, stops,</text>
+    <text x="28" y="146" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">limits and approvals</text>
+  </g>
+
+  <line x1="1014" y1="250" x2="1102" y2="250" stroke="#79a7ff" stroke-width="5" marker-end="url(#arrow)" opacity="0.9"/>
+
+  <g transform="translate(1124 165)" filter="url(#softShadow)">
+    <rect width="132" height="170" rx="18" fill="url(#card)" stroke="#345061" stroke-width="2"/>
+    <circle cx="50" cy="50" r="24" fill="#ff6f7d" opacity="0.16"/>
+    <path d="M38 66 L50 30 L62 66 Z" fill="none" stroke="#ff8b95" stroke-width="4" stroke-linejoin="round"/>
+    <text x="24" y="96" fill="#e8edf2" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">Bots</text>
+    <text x="24" y="124" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">Run, monitor</text>
+    <text x="24" y="146" fill="#aebdc7" font-family="Inter, Arial, sans-serif" font-size="15">and recover</text>
+  </g>
+
+  <path d="M1188 354 C1188 418 190 418 190 354" fill="none" stroke="#55d49a" stroke-width="4" stroke-dasharray="10 10" opacity="0.7" marker-end="url(#arrow)"/>
+  <rect x="468" y="392" width="384" height="62" rx="16" fill="#13251f" stroke="#2d6c51" stroke-width="2"/>
+  <text x="505" y="429" fill="#dff7eb" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800">Journal learns from every run</text>
+  <text x="505" y="449" fill="#9fcbb6" font-family="Inter, Arial, sans-serif" font-size="14">Results, mistakes and improvements feed the next validation cycle</text>
+</svg>
