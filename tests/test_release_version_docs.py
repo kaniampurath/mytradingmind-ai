@@ -9,8 +9,8 @@ def test_application_version_is_current_release() -> None:
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
     app = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
 
-    assert __version__ == "1.2.6"
-    assert 'version = "1.2.6"' in pyproject
+    assert __version__ == "1.2.7"
+    assert 'version = "1.2.7"' in pyproject
     assert "APP_VERSION" in app
     assert "Version {APP_VERSION}" in app
 
@@ -21,8 +21,8 @@ def test_release_docs_describe_baseline_and_current_tags() -> None:
     ubuntu = Path("docs/UBUNTU_DROPLET_DEPLOYMENT.md").read_text(encoding="utf-8")
 
     assert "`v1.0`: baseline app release" in readme
-    assert "`v1.2.6`: current main release" in readme
+    assert "`v1.2.7`: current main release" in readme
     assert "git checkout v1.0" in releases
-    assert "git checkout v1.2.6" in releases
-    assert "git checkout v1.2.6" in ubuntu
+    assert "git checkout v1.2.7" in releases
+    assert "git checkout v1.2.7" in ubuntu
     assert "mytradingmind_runtime mytradingmind_dashboard scanner" in ubuntu

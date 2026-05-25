@@ -100,6 +100,8 @@ def test_runtime_screen_merges_persisted_trade_state_after_ui_restart() -> None:
     runtime_body = text[text.index("def bot_runtime_screen") : text.index("def bot_admin_screen")]
 
     assert "RuntimeManager().list_bot_states()" in runtime_body
+    assert '"status"' in runtime_body
+    assert '"runtime_mode"' in runtime_body
     assert '"runtime_position_state"' in runtime_body
     assert '"last_entry_at"' in runtime_body
     assert '"last_exit_at"' in runtime_body

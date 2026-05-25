@@ -5340,6 +5340,9 @@ def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -
     if not runtime_states.empty and "bot_id" in runtime_states:
         runtime_cols = [
             "bot_id",
+            "status",
+            "mode",
+            "runtime_mode",
             "started_at",
             "pnl_started_at",
             "runtime_entry_price",

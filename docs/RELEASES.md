@@ -18,15 +18,16 @@ python scripts/init_db.py --print-tables
 python -m mytradingmind.dashboard start
 ```
 
-## v1.2.6 Current Main
+## v1.2.7 Current Main
 
-`v1.2.6` is the current main release. It includes the v1.2 operations platform plus:
+`v1.2.7` is the current main release. It includes the v1.2 operations platform plus:
 
 - Security/RBAC foundations with hashed credentials and role-gated navigation
 - Ubuntu/DigitalOcean install preflight, environment validation, upgrade automation, diagnostics, and reboot helpers
 - Docker runtime image packaging for the `mytradingmind.runtime` compatibility entrypoint
 - Dashboard resilience for empty or malformed live-scan data
 - Runtime-state trade classification from persisted headless status and entry price
+- Runtime status merge into bot tiles so running headless bots do not display as stopped
 - AAPIF institutional strategy evolution clones preserved beside baseline strategies
 - Persisted bot in-trade/out-of-trade state for UI restart recovery
 
@@ -45,7 +46,7 @@ Use it for current testnet/paper operations:
 
 ```bash
 git fetch --tags
-git checkout v1.2.6
+git checkout v1.2.7
 python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
