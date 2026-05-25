@@ -86,7 +86,10 @@ def test_upgrade_script_checks_version_database_and_restarts_services() -> None:
     assert "git fetch --tags origin" in text
     assert "latest_release_tag" in text
     assert "scripts/validate_env.py --env-file .env" in text
+    assert "stage \"Build migration image\"" in text
+    assert "build mytradingmind_dashboard" in text
     assert "python scripts/init_db.py --print-tables" in text
+    assert "test -f scripts/enterprise_security_test.py" in text
     assert "python scripts/enterprise_security_test.py --concurrent-users 10" in text
     assert "up -d mytradingmind_runtime mytradingmind_dashboard scanner" in text
     assert "python scripts/runtime_diagnostics.py" in text
