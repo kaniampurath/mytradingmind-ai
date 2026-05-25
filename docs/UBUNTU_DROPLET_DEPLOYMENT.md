@@ -1,6 +1,6 @@
 # Ubuntu / DigitalOcean Deployment Guide
 
-This guide installs mytradingmind.ai v1.2.1 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
+This guide installs mytradingmind.ai v1.2.2 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
 
 ## 1. Create The Droplet
 
@@ -34,12 +34,12 @@ Log out and back in, or reboot, after adding the user to the `docker` group. On 
 
 ## 3. Clone From GitHub
 
-Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2.1` is the current main release.
+Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2.2` is the current main release.
 
 ```bash
 git clone https://github.com/kaniampurath/mytradingmind-ai.git
 cd mytradingmind-ai
-git checkout v1.2.1
+git checkout v1.2.2
 ```
 
 ## 4. Create Environment File
@@ -117,6 +117,38 @@ The database bootstrap creates/verifies:
 - `subscriptions`, `user_bot_subscriptions`, `billing_history`
 - `sessions`, `audit_trail`, `activation_tokens`
 - `admin_bootstrap_credentials`
+
+## 5A. Upgrade An Existing Ubuntu Install
+
+For a droplet that already has `.env`, Docker volumes, and services, use the
+upgrade path instead of deleting or recreating the database:
+
+```bash
+cd mytradingmind-ai
+bash setup.sh --upgrade --target-version latest
+```
+
+The upgrade flow:
+
+- fetches GitHub tags and checks out the latest release tag
+- preserves `.env` and adds only missing keys from `deploy/ubuntu.env.example`
+- validates Docker, ports, symbols, Redis, and MariaDB credentials
+- starts MariaDB/Redis and runs `scripts/init_db.py --print-tables`
+- applies additive schema changes without dropping existing data
+- rebuilds and restarts dashboard, headless runtime, and scanner
+- runs runtime diagnostics and prints the running version
+
+To install a specific release:
+
+```bash
+bash setup.sh --upgrade --target-version v1.2.2
+```
+
+To refresh historical Binance feature files during upgrade:
+
+```bash
+bash setup.sh --upgrade --target-version latest --backfill
+```
 
 Security bootstrap is idempotent. Default roles are `BASIC_USER`, `POWER_USER`, and `ADMIN`. Passwords, activation tokens, reset tokens, and bootstrap credentials are stored only as hashes. To create a first-use admin bootstrap credential, set both `AEGIS_BOOTSTRAP_ADMIN_EMAIL` and `AEGIS_BOOTSTRAP_ADMIN_TEMP_PASSWORD` before DB initialization.
 
@@ -211,7 +243,7 @@ Runtime helper defaults:
 
 ```bash
 git pull
-git checkout v1.2.1
+git checkout v1.2.2
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
   python scripts/init_db.py --print-tables
@@ -239,7 +271,7 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 Return to the current release:
 
 ```bash
-git checkout v1.2.1
+git checkout v1.2.2
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 ```
 

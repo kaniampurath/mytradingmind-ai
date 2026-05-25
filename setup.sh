@@ -4,6 +4,11 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
+if [ "${1:-}" = "--upgrade" ] || [ "${1:-}" = "upgrade" ]; then
+  shift || true
+  exec bash scripts/upgrade_ubuntu.sh "$@"
+fi
+
 echo "Preparing mytradingmind.ai local deployment workspace"
 
 mkdir -p data reports logs backups
@@ -45,3 +50,6 @@ echo "  docker compose -f deploy/docker-compose.yml --env-file .env run --rm myt
 echo "  docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard python scripts/binance_backfill.py"
 echo "  docker compose -f deploy/docker-compose.yml --env-file .env up -d --build mytradingmind_runtime mytradingmind_dashboard scanner"
 echo "  scripts/install_sanity_ubuntu.sh"
+echo
+echo "For an existing Ubuntu deployment, use:"
+echo "  bash setup.sh --upgrade --target-version latest"

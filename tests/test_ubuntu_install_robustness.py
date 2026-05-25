@@ -77,3 +77,16 @@ def test_setup_invokes_preinstall_and_env_validation() -> None:
     assert "scripts/preinstall_check_ubuntu.py" in setup
     assert "scripts/validate_env.py --env-file .env" in setup
     assert "scripts/install_sanity_ubuntu.sh" in setup
+    assert "scripts/upgrade_ubuntu.sh" in setup
+
+
+def test_upgrade_script_checks_version_database_and_restarts_services() -> None:
+    text = Path("scripts/upgrade_ubuntu.sh").read_text(encoding="utf-8")
+
+    assert "git fetch --tags origin" in text
+    assert "latest_release_tag" in text
+    assert "scripts/validate_env.py --env-file .env" in text
+    assert "python scripts/init_db.py --print-tables" in text
+    assert "python scripts/enterprise_security_test.py --concurrent-users 10" in text
+    assert "up -d mytradingmind_runtime mytradingmind_dashboard scanner" in text
+    assert "python scripts/runtime_diagnostics.py" in text
