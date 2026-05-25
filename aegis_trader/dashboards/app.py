@@ -117,6 +117,8 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_LIVE_SYMBOLS: tuple[str, ...] = tuple(settings.symbols)
+LIVE_AUTO_REFRESH_SCREENS = {"DASHBOARD", "BOT MANAGEMENT", "TRADE MANAGEMENT", "SYSTEM HEALTH"}
+LIVE_AUTO_REFRESH_SECONDS = 5
 INSTITUTIONAL_BOT_CAGR_SOURCES = [
     {
         "source": "Barclay BTOP50 managed-futures index",
@@ -144,6 +146,37 @@ STRATEGY_MATRIX_CACHE_PATH = Path("reports/strategy_matrix_cache.json")
 SIGNAL_FLOW_BACKTEST_CACHE_PATH = Path("reports/signal_flow_top10_backtest.json")
 POSITION_SIZE_DECISIONS_PATH = Path("reports/position_size_decisions.json")
 BOT_ACTION_AUDIT_PATH = Path("reports/bot_action_audit.json")
+
+
+def live_auto_refresh_enabled(page: str) -> bool:
+    return str(page).upper() in LIVE_AUTO_REFRESH_SCREENS and not bool(st.session_state.get("live_auto_refresh_paused", False))
+
+
+def live_auto_refresh_component(page: str, interval_seconds: int = LIVE_AUTO_REFRESH_SECONDS) -> None:
+    if not live_auto_refresh_enabled(page):
+        return
+    interval_ms = max(2, int(interval_seconds)) * 1000
+    refresh_key = str(page).upper().replace(" ", "_")
+    components.html(
+        f"""
+        <script>
+          const refreshKey = "mtm-live-refresh-{refresh_key}";
+          const intervalMs = {interval_ms};
+          if (!window.parent.__mtmLiveRefreshTimers) {{
+            window.parent.__mtmLiveRefreshTimers = {{}};
+          }}
+          if (!window.parent.__mtmLiveRefreshTimers[refreshKey]) {{
+            window.parent.__mtmLiveRefreshTimers[refreshKey] = window.parent.setInterval(() => {{
+              const url = new URL(window.parent.location.href);
+              url.searchParams.set("_live_refresh", String(Date.now()));
+              window.parent.location.replace(url.toString());
+            }}, intervalMs);
+          }}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def setting_bool(name: str, default: bool = False) -> bool:
@@ -7660,7 +7693,12 @@ with st.sidebar:
     default_symbol = selectable_symbols[0] if selectable_symbols else ""
     data_file = feature_files.get(default_symbol, Path("__missing_feature_file__"))
     if context is not None:
-        st.caption("Live prices update inside the ticker only; the page itself does not auto-refresh.")
+        st.session_state["live_auto_refresh_paused"] = st.checkbox(
+            "Pause live screen refresh",
+            value=bool(st.session_state.get("live_auto_refresh_paused", False)),
+            help="When off, live operational screens reload runtime/scanner data every few seconds.",
+        )
+        st.caption(f"Live operational screens refresh every {LIVE_AUTO_REFRESH_SECONDS}s unless paused.")
         st.caption("Mode: Binance Spot Testnet live scan with Binance one-year candle backtest.")
 
 log_diagnostic(logger, "dashboard_page_selected", page=page)
@@ -7682,6 +7720,7 @@ if requires_password_change() and page != "MY PROFILE":
     st.stop()
 
 account_status_bar()
+live_auto_refresh_component(page)
 
 if not data_file.exists():
     logger.error("dashboard_missing_data_file path=%s", data_file)

@@ -110,6 +110,16 @@ def test_runtime_screen_merges_persisted_trade_state_after_ui_restart() -> None:
     assert '"last_trade_event_reason"' in runtime_body
 
 
+def test_live_operational_screens_have_auto_refresh_controller() -> None:
+    text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
+
+    assert "LIVE_AUTO_REFRESH_SCREENS" in text
+    assert "def live_auto_refresh_component" in text
+    assert "url.searchParams.set(\"_live_refresh\"" in text
+    assert "Pause live screen refresh" in text
+    assert "live_auto_refresh_component(page)" in text
+
+
 def test_live_scan_without_symbol_column_falls_back_to_default_symbols() -> None:
     malformed = pd.DataFrame([{"status": "scanner_failed"}])
 

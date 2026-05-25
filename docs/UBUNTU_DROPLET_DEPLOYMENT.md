@@ -1,6 +1,6 @@
 # Ubuntu / DigitalOcean Deployment Guide
 
-This guide installs mytradingmind.ai v1.2.8 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
+This guide installs mytradingmind.ai v1.2.9 on an Ubuntu droplet using Docker Compose, MariaDB 10.11, Redis 7, a headless bot runtime, scanner, and Streamlit operator dashboard.
 
 ## 1. Create The Droplet
 
@@ -34,12 +34,12 @@ Log out and back in, or reboot, after adding the user to the `docker` group. On 
 
 ## 3. Clone From GitHub
 
-Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2.8` is the current main release.
+Use the current release tag for a stable deployment. `v1.0` is the preserved baseline; `v1.2.9` is the current main release.
 
 ```bash
 git clone https://github.com/kaniampurath/mytradingmind-ai.git
 cd mytradingmind-ai
-git checkout v1.2.8
+git checkout v1.2.9
 ```
 
 ## 4. Create Environment File
@@ -141,7 +141,7 @@ The upgrade flow:
 To install a specific release:
 
 ```bash
-bash setup.sh --upgrade --target-version v1.2.8
+bash setup.sh --upgrade --target-version v1.2.9
 ```
 
 To refresh historical Binance feature files during upgrade:
@@ -243,7 +243,7 @@ Runtime helper defaults:
 
 ```bash
 git pull
-git checkout v1.2.8
+git checkout v1.2.9
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 docker compose -f deploy/docker-compose.yml --env-file .env run --rm mytradingmind_dashboard \
   python scripts/init_db.py --print-tables
@@ -271,7 +271,7 @@ docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 Return to the current release:
 
 ```bash
-git checkout v1.2.8
+git checkout v1.2.9
 docker compose -f deploy/docker-compose.yml --env-file .env up -d --build
 ```
 
