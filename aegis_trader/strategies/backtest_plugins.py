@@ -39,6 +39,7 @@ class BacktestSignal:
 class BacktestStrategy(ABC):
     name: str
     description: str
+    version: str = "1.0.0"
     default_timeframe: str = "1h"
     activation_state: str = "DORMANT"
     activation_reason: str = "Experimental strategy: keep dormant until it passes objective backtest, stress, journal, and risk certification gates."

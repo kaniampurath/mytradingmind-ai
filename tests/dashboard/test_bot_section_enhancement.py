@@ -165,3 +165,21 @@ def test_runtime_trade_position_status_shows_in_trade_without_exit_signal() -> N
 
     assert status["trade_position_state"] == "IN_TRADE"
     assert status["in_trade"] is True
+
+
+def test_runtime_trade_position_status_uses_persisted_runtime_status() -> None:
+    bot = {
+        "bot_id": "ETHUSDT_bot",
+        "name": "ETHUSDT bot",
+        "state": "BACKTESTED",
+        "status": "RUNNING",
+        "runtime_entry_price": 2039.21,
+        "started_at": "2026-05-25T15:13:20+00:00",
+        "parameters": {},
+    }
+
+    status = runtime_trade_position_status(bot, pd.DataFrame())
+
+    assert status["trade_position_state"] == "IN_TRADE"
+    assert status["in_trade"] is True
+    assert "active entry price" in status["trade_position_reason"]

@@ -2339,9 +2339,11 @@ def bot_live_mark(bot: pd.Series, scan: pd.DataFrame) -> dict[str, float | str |
 def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_events: pd.DataFrame | None = None) -> dict[str, object]:
     bot_id = str(bot.get("bot_id", bot.get("name", ""))) if hasattr(bot, "get") else ""
     bot_name = str(bot.get("name", "")) if hasattr(bot, "get") else ""
-    runtime_state = str(bot.get("state", "DRAFT") if hasattr(bot, "get") else "DRAFT")
+    runtime_state = str(bot.get("state", "DRAFT") if hasattr(bot, "get") else "DRAFT").upper()
+    runtime_status = str(bot.get("status", "") if hasattr(bot, "get") else "").upper()
+    runtime_active = runtime_state in {"RUNNING", "DEPLOYED"} or runtime_status in {"RUNNING", "DEPLOYED"}
     params = bot_parameters(bot)
-    if runtime_state not in {"RUNNING", "DEPLOYED"}:
+    if not runtime_active:
         return {
             "trade_position_state": "RUNTIME_STOPPED",
             "in_trade": False,
@@ -2397,6 +2399,8 @@ def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_even
 
     explicit_position = str(params.get("runtime_position_state", bot.get("runtime_position_state", "") if hasattr(bot, "get") else "")).upper()
     last_exit_at = str(bot.get("last_exit_at", "") or params.get("last_exit_at", "") if hasattr(bot, "get") else "")
+    runtime_entry_price = float(bot.get("runtime_entry_price", 0.0) or params.get("runtime_entry_price", 0.0) or 0.0) if hasattr(bot, "get") else 0.0
+    runtime_started_at = str(bot.get("started_at", "") or params.get("runtime_started_at", "") or bot.get("deployed_at", "") if hasattr(bot, "get") else "")
     if explicit_position in {"OUT_OF_TRADE", "FLAT"} or last_exit_at:
         return {
             "trade_position_state": "OUT_OF_TRADE",
@@ -2404,6 +2408,15 @@ def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_even
             "trade_position_reason": "exit signal recorded in runtime metadata",
             "last_entry_at": str(bot.get("last_entry_at", "") or params.get("last_entry_at", "") if hasattr(bot, "get") else ""),
             "last_exit_at": last_exit_at,
+            "last_trade_event_type": "",
+        }
+    if explicit_position in {"IN_TRADE", "OPEN"} or runtime_entry_price > 0:
+        return {
+            "trade_position_state": "IN_TRADE",
+            "in_trade": True,
+            "trade_position_reason": "runtime metadata shows active entry price",
+            "last_entry_at": str(bot.get("last_entry_at", "") or params.get("last_entry_at", "") or runtime_started_at if hasattr(bot, "get") else ""),
+            "last_exit_at": "",
             "last_trade_event_type": "",
         }
     return {
