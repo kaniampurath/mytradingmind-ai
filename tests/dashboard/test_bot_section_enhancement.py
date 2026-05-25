@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from aegis_trader.dashboards import app
 from aegis_trader.dashboards.app import runtime_trade_position_status
 
 
@@ -105,6 +106,16 @@ def test_runtime_screen_merges_persisted_trade_state_after_ui_restart() -> None:
     assert '"last_trade_event_type"' in runtime_body
     assert '"last_trade_event_at"' in runtime_body
     assert '"last_trade_event_reason"' in runtime_body
+
+
+def test_live_scan_without_symbol_column_falls_back_to_default_symbols() -> None:
+    malformed = pd.DataFrame([{"status": "scanner_failed"}])
+
+    normalized = app.ensure_default_live_symbols(malformed)
+
+    assert "symbol" in normalized.columns
+    assert set(app.DEFAULT_LIVE_SYMBOLS).issubset(set(normalized["symbol"].astype(str)))
+    assert "scanner_failed" not in set(normalized["symbol"].astype(str))
 
 
 def test_runtime_trade_position_status_shows_out_of_trade_after_exit_signal() -> None:

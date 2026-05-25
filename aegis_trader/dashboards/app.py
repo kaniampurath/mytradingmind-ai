@@ -1290,11 +1290,14 @@ def default_live_scan_frame() -> pd.DataFrame:
 
 
 def ensure_default_live_symbols(scan: pd.DataFrame) -> pd.DataFrame:
+    if scan is None or scan.empty or "symbol" not in scan.columns:
+        return default_live_scan_frame()
     scan = scan.copy()
     if "priority" not in scan.columns:
         scan["priority"] = 100
+    existing_symbols = set(scan["symbol"].fillna("").astype(str))
     for index, symbol in enumerate(list(DEFAULT_LIVE_SYMBOLS) or available_live_symbols()):
-        if symbol in set(scan["symbol"].astype(str)):
+        if symbol in existing_symbols:
             scan.loc[scan["symbol"] == symbol, "priority"] = index
             continue
         scan = pd.concat(
@@ -1337,6 +1340,13 @@ def ensure_default_live_symbols(scan: pd.DataFrame) -> pd.DataFrame:
 def normalize_scan_columns(scan: pd.DataFrame) -> pd.DataFrame:
     scan = scan.copy()
     defaults = {
+        "symbol": "",
+        "scan_bucket": "NO SIGNAL",
+        "scan_reason": "scanner data unavailable",
+        "last_close": 0.0,
+        "active_entry": None,
+        "active_pnl": None,
+        "active_pnl_pct": None,
         "watch_score": 0.0,
         "buy_score": 0.0,
         "sell_score": 0.0,
