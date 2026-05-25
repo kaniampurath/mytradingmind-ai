@@ -71,6 +71,13 @@ def test_docker_compose_has_restart_healthchecks_and_configurable_ports() -> Non
     assert "_stcore/health" in compose
 
 
+def test_dockerfile_copies_runtime_compatibility_package() -> None:
+    dockerfile = Path("deploy/Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY aegis_trader /app/aegis_trader" in dockerfile
+    assert "COPY mytradingmind /app/mytradingmind" in dockerfile
+
+
 def test_setup_invokes_preinstall_and_env_validation() -> None:
     setup = Path("setup.sh").read_text(encoding="utf-8")
 

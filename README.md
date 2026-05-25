@@ -7,7 +7,7 @@ mytradingmind.ai is an educational, testnet-first crypto trading operations plat
 ## Releases
 
 - `v1.0`: baseline app release preserved from the original `main` branch before the Bot Operations Platform upgrade.
-- `v1.2.3`: current main release with Bot Management, runtime cockpit, Trade Management, journal analysis, headless runtime scripts, Ubuntu install/upgrade hardening, security/RBAC foundations, AAPIF strategy evolution, and persisted bot trade-state recovery.
+- `v1.2.4`: current main release with Bot Management, runtime cockpit, Trade Management, journal analysis, headless runtime scripts, Ubuntu install/upgrade hardening, Docker runtime entrypoint packaging, security/RBAC foundations, AAPIF strategy evolution, and persisted bot trade-state recovery.
 
 Use either release independently:
 
@@ -15,7 +15,7 @@ Use either release independently:
 git clone https://github.com/kaniampurath/mytradingmind-ai.git
 cd mytradingmind-ai
 git checkout v1.0   # baseline
-git checkout v1.2.3 # current main release
+git checkout v1.2.4 # current main release
 ```
 
 ## What It Does
