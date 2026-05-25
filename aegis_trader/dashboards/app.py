@@ -152,31 +152,13 @@ def live_auto_refresh_enabled(page: str) -> bool:
     return str(page).upper() in LIVE_AUTO_REFRESH_SCREENS and not bool(st.session_state.get("live_auto_refresh_paused", False))
 
 
-def live_auto_refresh_component(page: str, interval_seconds: int = LIVE_AUTO_REFRESH_SECONDS) -> None:
-    if not live_auto_refresh_enabled(page):
-        return
-    interval_ms = max(2, int(interval_seconds)) * 1000
-    refresh_key = str(page).upper().replace(" ", "_")
-    components.html(
-        f"""
-        <script>
-          const refreshKey = "mtm-live-refresh-{refresh_key}";
-          const intervalMs = {interval_ms};
-          if (!window.parent.__mtmLiveRefreshTimers) {{
-            window.parent.__mtmLiveRefreshTimers = {{}};
-          }}
-          if (!window.parent.__mtmLiveRefreshTimers[refreshKey]) {{
-            window.parent.__mtmLiveRefreshTimers[refreshKey] = window.parent.setInterval(() => {{
-              const url = new URL(window.parent.location.href);
-              url.searchParams.set("_live_refresh", String(Date.now()));
-              window.parent.location.replace(url.toString());
-            }}, intervalMs);
-          }}
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+def live_data_fragment(func):
+    """Refresh only the decorated live data region when Streamlit supports fragments."""
+
+    fragment = getattr(st, "fragment", None)
+    if callable(fragment):
+        return fragment(run_every=f"{LIVE_AUTO_REFRESH_SECONDS}s")(func)
+    return func
 
 
 def setting_bool(name: str, default: bool = False) -> bool:
@@ -4522,6 +4504,7 @@ def signal_flow_component(rows: list[dict[str, object]], calm: bool = False) -> 
     components.html(html, height=720)
 
 
+@live_data_fragment
 def dashboard_screen(summary: dict[str, float | str]) -> None:
     status_row(summary)
     scan = normalize_scan_columns(load_live_scan())
@@ -5363,6 +5346,7 @@ def bot_framework_screen(data: dict[str, pd.DataFrame | dict[str, float | str]])
     st.info("Flow: create a bot here, validate it in Validation Lab, then deploy or stop it in Runtime. Saved bots appear on the next screens immediately.")
 
 
+@live_data_fragment
 def bot_runtime_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Bot Runtime")
     st.caption("Live bot cockpit with portfolio summary, ranked bot tiles, and Binance Testnet price updates.")
@@ -6245,6 +6229,7 @@ def execution_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> 
     st.dataframe(orders.tail(18), use_container_width=True, hide_index=True)
 
 
+@live_data_fragment
 def health_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     stream = live_stream_heartbeat(load_live_stream())
     bots = load_bot_instances()
@@ -6284,6 +6269,7 @@ def health_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> Non
         st.dataframe(critical, use_container_width=True, hide_index=True)
 
 
+@live_data_fragment
 def trade_management_screen(data: dict[str, pd.DataFrame | dict[str, float | str]]) -> None:
     st.markdown("### Trade Management")
     st.caption("Bot-level trade lifecycle, risk posture, runtime visibility, and audit evidence. Headline numbers update live without refreshing the screen.")
@@ -7694,11 +7680,11 @@ with st.sidebar:
     data_file = feature_files.get(default_symbol, Path("__missing_feature_file__"))
     if context is not None:
         st.session_state["live_auto_refresh_paused"] = st.checkbox(
-            "Pause live screen refresh",
+            "Pause live data refresh",
             value=bool(st.session_state.get("live_auto_refresh_paused", False)),
-            help="When off, live operational screens reload runtime/scanner data every few seconds.",
+            help="When off, only live data sections refresh every few seconds. The full page and navigation stay in place.",
         )
-        st.caption(f"Live operational screens refresh every {LIVE_AUTO_REFRESH_SECONDS}s unless paused.")
+        st.caption(f"Live data sections refresh every {LIVE_AUTO_REFRESH_SECONDS}s unless paused.")
         st.caption("Mode: Binance Spot Testnet live scan with Binance one-year candle backtest.")
 
 log_diagnostic(logger, "dashboard_page_selected", page=page)
@@ -7720,7 +7706,6 @@ if requires_password_change() and page != "MY PROFILE":
     st.stop()
 
 account_status_bar()
-live_auto_refresh_component(page)
 
 if not data_file.exists():
     logger.error("dashboard_missing_data_file path=%s", data_file)

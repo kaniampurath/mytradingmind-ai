@@ -110,14 +110,18 @@ def test_runtime_screen_merges_persisted_trade_state_after_ui_restart() -> None:
     assert '"last_trade_event_reason"' in runtime_body
 
 
-def test_live_operational_screens_have_auto_refresh_controller() -> None:
+def test_live_operational_screens_refresh_with_data_fragments_not_page_reload() -> None:
     text = Path("aegis_trader/dashboards/app.py").read_text(encoding="utf-8")
 
     assert "LIVE_AUTO_REFRESH_SCREENS" in text
-    assert "def live_auto_refresh_component" in text
-    assert "url.searchParams.set(\"_live_refresh\"" in text
-    assert "Pause live screen refresh" in text
-    assert "live_auto_refresh_component(page)" in text
+    assert "def live_data_fragment" in text
+    assert 'fragment(run_every=f"{LIVE_AUTO_REFRESH_SECONDS}s")' in text
+    assert "@live_data_fragment\ndef dashboard_screen" in text
+    assert "@live_data_fragment\ndef bot_runtime_screen" in text
+    assert "@live_data_fragment\ndef trade_management_screen" in text
+    assert "Pause live data refresh" in text
+    assert "_live_refresh" not in text
+    assert "window.parent.location.replace" not in text
 
 
 def test_live_scan_without_symbol_column_falls_back_to_default_symbols() -> None:
