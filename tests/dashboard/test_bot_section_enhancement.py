@@ -185,3 +185,32 @@ def test_runtime_trade_position_status_uses_persisted_runtime_status() -> None:
     assert status["trade_position_state"] == "IN_TRADE"
     assert status["in_trade"] is True
     assert "active entry price" in status["trade_position_reason"]
+
+
+def test_trade_created_event_does_not_override_runtime_entry_price() -> None:
+    bot = {
+        "bot_id": "ETHUSDT_bot",
+        "name": "ETHUSDT bot",
+        "state": "BACKTESTED",
+        "status": "RUNNING",
+        "runtime_entry_price": 2039.21,
+        "started_at": "2026-05-25T15:13:20+00:00",
+        "parameters": {},
+    }
+    events = pd.DataFrame(
+        [
+            {
+                "bot_id": "ETHUSDT_bot",
+                "event_type": "TradeCreated",
+                "event_time": "2026-05-25T15:13:20+00:00",
+                "position_state": "FLAT",
+                "lifecycle_state": "Pending",
+            }
+        ]
+    )
+
+    status = runtime_trade_position_status(bot, events)
+
+    assert status["trade_position_state"] == "IN_TRADE"
+    assert status["in_trade"] is True
+    assert "active entry price" in status["trade_position_reason"]

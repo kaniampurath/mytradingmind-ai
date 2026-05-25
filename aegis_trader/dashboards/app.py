@@ -2369,8 +2369,11 @@ def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_even
                 event_type = matches.get("event_type", pd.Series("", index=matches.index)).astype(str)
                 lifecycle = matches.get("lifecycle_state", pd.Series("", index=matches.index)).astype(str)
                 position = matches.get("position_state", pd.Series("", index=matches.index)).astype(str)
-                entry_mask = event_type.isin(["TradeEntered", "TradeCreated"]) | lifecycle.isin(["Submitted", "Filled", "Active", "Partially Filled", "Partially Exited"]) | position.eq("OPEN")
-                exit_mask = event_type.isin(["TradeExited", "StopTriggered", "RiskTriggered"]) | lifecycle.isin(["Closed", "Cancelled", "Failed"]) | position.eq("FLAT")
+                real_entry_event = event_type.isin(["TradeEntered"])
+                real_exit_event = event_type.isin(["TradeExited", "StopTriggered", "RiskTriggered"])
+                setup_event = event_type.isin(["TradeCreated"])
+                entry_mask = real_entry_event | lifecycle.isin(["Filled", "Active", "Partially Filled", "Partially Exited"]) | position.eq("OPEN")
+                exit_mask = real_exit_event | lifecycle.isin(["Closed", "Cancelled", "Failed"]) | (position.eq("FLAT") & ~setup_event)
                 entry_time = matches.loc[entry_mask, "_event_time"].max() if entry_mask.any() else pd.NaT
                 exit_time = matches.loc[exit_mask, "_event_time"].max() if exit_mask.any() else pd.NaT
                 last = matches.iloc[-1]
@@ -2378,7 +2381,7 @@ def runtime_trade_position_status(bot: pd.Series | dict[str, object], trade_even
                 last_position = str(last.get("position_state", ""))
                 last_lifecycle = str(last.get("lifecycle_state", ""))
                 exited_after_entry = pd.notna(exit_time) and (pd.isna(entry_time) or exit_time >= entry_time)
-                if exited_after_entry or last_event_type in {"TradeExited", "StopTriggered", "RiskTriggered"} or last_position == "FLAT" or last_lifecycle in {"Closed", "Cancelled", "Failed"}:
+                if exited_after_entry or last_event_type in {"TradeExited", "StopTriggered", "RiskTriggered"} or (last_position == "FLAT" and last_event_type != "TradeCreated") or last_lifecycle in {"Closed", "Cancelled", "Failed"}:
                     return {
                         "trade_position_state": "OUT_OF_TRADE",
                         "in_trade": False,
